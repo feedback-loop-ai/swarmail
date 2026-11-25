@@ -115,6 +115,18 @@ impl Plan {
     }
 
     pub fn with_margin(tier: Option<tasks::Tier>, output: &Path, margin_minutes: u64) -> Self {
+        Self::with_route(tier, output, margin_minutes, None)
+    }
+
+    /// `driver` runs every paid agent through that pinned brokkr driver
+    /// (route (b)): each takes its amended `*_via_brokkr` profile and the
+    /// `--via-brokkr` flag, so the product id covers the route and the path.
+    pub fn with_route(
+        tier: Option<tasks::Tier>,
+        output: &Path,
+        margin_minutes: u64,
+        driver: Option<&Path>,
+    ) -> Self {
         let tasks: Vec<_> = tasks::catalogue()
             .into_iter()
             .filter(|t| match tier {
@@ -123,7 +135,14 @@ impl Plan {
             })
             .map(|t| t.id)
             .collect();
-        let agents = report::parse_agents(AGENTS).expect("reviewed agent declarations");
+        let mut agents = report::parse_agents(AGENTS).expect("reviewed agent declarations");
+        if let Some(driver) = driver {
+            for a in &mut agents {
+                a.wrapper_profile = a.wrapper_profile.map(WrapperProfile::via);
+                a.argv.push("--via-brokkr".into());
+                a.argv.push(driver.to_string_lossy().into_owned());
+            }
+        }
         let control_agents =
             report::parse_agents(r#"[{"label":"oracle","argv":[]},{"label":"null","argv":[]}]"#)
                 .expect("builtins");
@@ -245,6 +264,8 @@ impl Plan {
                 "report".into(),
                 "--input".into(),
                 output.join("paid.jsonl").to_string_lossy().into_owned(),
+                "--usage-from".into(),
+                output.join("paid").to_string_lossy().into_owned(),
             ],
             wrapper_contracts: "a version-2 private selection pins each family's CLI path, version, sha256 and auth shape (see evals/wrappers.md); authenticated six-model and HTTP MCP smoke remains operator-owned",
         }
@@ -385,7 +406,13 @@ pub fn validate_row(
             } else {
                 AgentKind::External
             }
-        || p.agent.tool_surface != ToolSurface::for_request(true, builtin, spec.wrapper_profile)
+        || p.agent.tool_surface
+            != ToolSurface::for_request(
+                true,
+                builtin,
+                spec.wrapper_profile,
+                crate::wrappers::argv_codex_class(&spec.argv),
+            )
         || p.agent.model != expected_model
         || p.agent.config_id != expected_config
         || p.agent.command != expected_command

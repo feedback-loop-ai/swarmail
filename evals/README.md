@@ -132,7 +132,10 @@ $E baseline --tier deliverability --config /private/wrappers.json --output /priv
   and `report.json`. `paid.jsonl` holds one scored row per slot;
   `report.json` also counts every retained unscored attempt (refused,
   interrupted, killed) under `attempts` and `harness_errors`, so retries are
-  visible and never change a success rate. Exit 0, 1 and 2 keep their
+  visible and never change a success rate. A nested row's usage in
+  `report.json` comes from its committed companion through the same verified
+  reader as `report --usage-from`, and the printed `report_argv` carries
+  `--usage-from <output>/paid`, so it reproduces those figures. Exit 0, 1 and 2 keep their
   meanings in [run-plan.md](run-plan.md#admission-retention-and-statuses),
   ruled over the scored rows. Every paid row carries `provenance.agent.cli`:
   the wrapper profile, the CLI version and its sha256.
@@ -143,13 +146,20 @@ $E baseline --tier deliverability --config /private/wrappers.json --output /priv
   else (a Volta shim, for example) passes the check and the row would record
   the launcher's version and digest, not the CLI's. The harness cannot tell
   the two apart, so choosing the real binary is the operator's attestation.
-  Only the profiles' exact versions qualify: Claude Code 2.1.310, codex-cli
-  0.164.0 and dsh 0.1.5-rc.1. The CLIs the published pages record
-  (Claude 2.1.316–2.1.319, dsh 0.2.1-rc.3 and 0.2.2-rc.1) refuse with
-  `version_mismatch` until a profile for that version lands (a reviewed
-  change to `wrappers.rs`). The dsh 0.1.5-rc.1 banner (`0.1.5-rc.1`) is the
-  profile's, not yet observed from a real binary. A CLI shipped only as an
-  interpreted package has no native file to pin and cannot run paid.
+  Only the approved profiles' exact versions qualify (accepted 0137's
+  2026-11-23 amendment): Claude Code 2.1.329 (`claude_2_1_329`), codex-cli
+  0.166.0 (`codex_0_166_0`, the native binary behind the Volta shim, never
+  the shim) and dsh 0.2.2-rc.1 (`dsh_0_2_2_rc_1`). Any other installed
+  version refuses with `version_mismatch`. The superseded selectors
+  (`claude_2_1_310`, `codex_0_164_0`, `dsh_0_1_5_rc_1`) still decode in
+  published rows and refuse in a selection with `profile_superseded`. dsh
+  ships as an interpreted package and is admitted only under its full pin:
+  the native node runtime (absolute path, exact `--version` line, sha256)
+  and the sha256 of every entry under the package root.
+  `swarmail-evals pin-interpreted` prints that pin for the selection, and
+  `evals/wrappers.md` lists its refusals. Before any spend, and again at
+  exec, the harness verifies the pin and runs the pinned runtime on the
+  pinned entry directly.
 * **Resume.** A score counts once its trial's hash-bound evidence is
   retained, and a resume reruns only the slots that are still outstanding.
   Harness-error and interrupted attempts stay as evidence and use up no slot.
@@ -793,10 +803,16 @@ tracked in brokkr#766.
 
 - `trial` runs `swarmail-evals trial` from a request the matrix wrote: it
   starts Swarmail and the fixture as its own children, runs the agent, saves
-  the app's state and stops both servers. The real `brokkr driver
-  claude|codex|dsh` as the agent's launcher is the design's intent but is
-  **refused today** (`--via-brokkr` fails closed with `driver_contract_unknown`
-  until the driver's invocation is observed; see `wrappers.md`).
+  the app's state and stops both servers. A wrapper agent may launch its CLI
+  through the pinned brokkr v0.15.2 driver (`--via-brokkr`, route (b) of
+  0119's 2026-11-23 addendum; `wrappers.md`), with `swarmail-evals` as that
+  driver's engine. A paid agent under `matrix --brokkr` (decided from the selection its
+  argv names, not its profile) is refused (`brokkr_paid_unbound`) unless the
+  trial seat declares F5's read-only binds (the paid read set below). At
+  launch a paid dsh wrapper re-proves every declared read-only source and the
+  profiles overlay in its own mount table before any credential read, direct
+  or nested; a paid claude or codex wrapper refuses
+  (`recipe_auth_unruled`) until the operator rules on read-only auth.
 - `review` (the exec scoring gate, `scripts/score.sh`, which is the recipe's
   protected review under brokkr 0.12.0, decision 0119 R4) re-applies the task's
   check to the retained leaf (`check --artifacts-dir`): the app's state, never the agent's account.
@@ -826,9 +842,10 @@ E=evals/target/debug/swarmail-evals
 # one command, one row per slot (from the repository root; --artifacts-dir required)
 $E matrix --brokkr "$PWD/.brokkr/state/bin/brokkr" --tasks signup,otp \
   --agents agents.json --trials 5 --artifacts-dir "$PWD/.brokkr/state/eval/run1" > runs.jsonl
-# accounting from the journal, joined to the rows by trial id
+# accounting from the journal, joined to the rows by trial id: one --run per
+# slot's brokkr run (`brokkr runs` lists them; a unique prefix is enough)
 bash evals/scripts/journal-facts.sh "$PWD/.brokkr/state/bin/brokkr" .brokkr/state/forge.db \
-  facts.json $(jq -r .trial_id runs.jsonl)
+  facts.json $(for r in $RUNS; do printf -- '--run %s ' "$r"; done) $(jq -r .trial_id runs.jsonl)
 $E report --input runs.jsonl --journal facts.json \
   --evidence-dir "$PWD/.brokkr/state/eval/run1-evidence"
 ```
@@ -838,14 +855,17 @@ the trial's deadline plus the runner's fixed startup and shutdown budgets must
 fit the trial seat's 1800 s. The matrix's wait on one worker is the trial
 deadline plus 300 s plus the review seat's 600 s. `--artifacts-dir` must resolve
 inside the current directory (`brokkr_artifacts_unreachable`): the seat's
-workspace hands reach nothing else. **Paid agents are unsupported under
-`matrix --brokkr`** until the follow-up below declares the binds a paid trial
-needs and lifts the driver refusal; the direct `matrix` (the #151 path) stays
-the paid route. Run only the oracle and null controls through this recipe now. Trials stay sequential (accepted 0076): the
+workspace hands reach nothing else. **A paid agent under `matrix --brokkr`
+fails closed** (`brokkr_paid_unbound`, before any slot) unless the recipe's
+trial seat declares every F5 bind of `wrappers.md`'s paid read set, and a
+paid wrapper inside the seat refuses (`paid_unbound`) unless its own mount
+table shows every declared source read-only and the profiles overlay private (claude and codex refuse there regardless, pending
+the operator's ruling on read-only auth). The host baseline (the #151 path) stays the
+paid route the operator has run; no paid trial has run through this recipe. Trials stay sequential (accepted 0076): the
 issue's "two concurrent trials of one task both pass" criterion is **not** met
 by this recipe and is not claimed; isolation is #221's.
 
-**What joins.** Rows are unchanged. `report --journal` adds a `journal` object
+**What joins.** The journal changes no row. `report --journal` adds a `journal` object
 to each group: joined count, typed `missing` reasons (`journal_missing`,
 `journal_ambiguous`, `journal_has_no_accounting`, `builtin_agent`), token
 distributions (`total` is input + output; `cached` is reported beside it),
@@ -857,10 +877,21 @@ with a reason. The tool-call figure and the deadline-kill count are each `null`
 with `incomplete_join` whenever any scored trial in the group lacks the fact;
 a figure is never `0`, `false` or `[]` for an unavailable fact, and a facts file
 that writes one of those bare is refused (`journal_invalid`).
-`evals/scripts/journal-facts.sh` fails with exit 2 and a class (`export_failed`,
-`export_not_json`, `export_version_unreadable`, `export_shape_mismatch`) and
-writes nothing when the export is unusable; it is re-run after the journal or
-its `EXTRACT` is corrected.
+`evals/scripts/journal-facts.sh` reads brokkr's real per-run export
+(`brokkr export --db DB --run RUN --out DIR`, one `RUN.ndjson` journal per run,
+observed 2026-11-23): the seat is `effect/requested.payload.seat`, a trial is
+owned by the one succeeded `trial`-seat attempt whose result names its
+`trial_id`, and tokens and turns come only from that attempt's session-final
+`effect/checkpointed.payload.checkpoint` (a step ending `-session-finished`).
+A retried attempt, an interleaved seat and per-turn rows never count;
+differing finals are `journal_ambiguous`; wall time and tool rows are not in
+the export and stay `journal_has_no_accounting`. It fails with exit 2 and a
+class (`export_failed`, `export_not_json`, `export_version_unreadable`,
+`export_shape_mismatch`) and writes nothing when an export is unusable, and
+publishes its file whole or not at all. `JOURNAL_EXPORT_DIR=DIR` reads saved
+`RUN.ndjson` files instead. A nested-driver trial's tokens never come from
+here: the outer `exec` seat carries none (brokkr#1289), and its row carries
+the harness's own record (below).
 
 **What is retained.** `--evidence-dir` writes `DIR/<trial_id>/tool-calls.json`
 per trial whose tool-call fact is present: ordinal, bounded tool name, outcome
@@ -1071,8 +1102,9 @@ $E report --input rows.jsonl --journal facts.json --evidence-dir "$PWD/evidence"
 - **What it cannot do yet.** The pinned engine's journal hashes the argument
   representation the CLI reported; until a real engine run shows those are
   the bytes the agent sent, a paid trial's values are expected to be
-  `binding_mismatch`. Paid via-brokkr trials still refuse
-  `driver_contract_unknown` (below), so no paid transcript exists today.
+  `binding_mismatch`. A via-brokkr trial's tool calls are journaled nowhere
+  (brokkr#1289), and no authenticated session has run through route (b) yet,
+  so no paid transcript exists today.
   The offline proof (`tests/tool_values.rs`) runs the stand-in with the oracle,
   the null control, a scripted agent that leaks the bearer and sentinels in
   spellings the mask covers (its companion publishes), one that plants a
@@ -1095,76 +1127,89 @@ through the recipe's two real scripts and the matrix, with an offline stand-in f
 `brokkr run` that renders the prompt as the engine does. No trial was run
 through a real `brokkr driver`, and the engine itself was not run.
 
-**This delivery lands the measuring machinery and does not measure tokens per
-success.** The accounting channel between a nested `brokkr driver` and the
-engine has never been observed, and every candidate channel is severed by four
-named seams (`wrappers.md`). Closing the #151 "Not measured" rows needs, in
-order: the operator's first engine run (oracle and null, offline, free); the
-operator's first authenticated via-brokkr smoke per family, which observes
-brokkr facts F1, F2 and F5; a follow-up change that forwards the observed
-channel through the four seams under 0119 section 6 (an exception to accepted
-0075 section 1, accepted with 0119 on 2026-11-06, that lands once the observed
-channel is recorded) and declares the binds; and then the paid matrix.
-Structural tool-call records landed with #316; value-bearing records and
-transcripts landed with #391 (above) and need no paid session, but a paid
-trial has none until the via-brokkr route exists.
+**Tokens per success through the nested driver (route (b), #404).** The
+outer `exec` adapter drops a nested driver's stdout (brokkr#1289), so no
+journal ever holds a nested trial's tokens. Instead the wrapper speaks
+forge-driver/v1 to the pinned brokkr v0.15.2 driver itself and reports the
+session-final usage on its launch pipe. The schema-2 row does not change
+(accepted 0119 §3): the runner publishes the sessions as the retained leaf's
+usage companion, `usage.json` (`version` 1, `source: via_brokkr_driver`, the
+row's `trial_id`, its matrix `slot`, the amended `profile`, and one `sessions`
+entry per expected agent in assignment order with its driver `attempt_id`,
+`disposition` and six facts), bound by digest in the same `metadata.json` that
+commits the score (proposed 0138). A three-agent task such as
+`inbox-isolation` lists all three sessions; the trial's figure is the checked
+per-field sum, and a session missing a field (or a sum past the exact range)
+makes that field unavailable, never zero. Reading one leaf refuses an orphan,
+missing, tampered or mismatched companion. Matrix replay, `report --usage-from`
+and `baseline --resume` each read their whole root with one owner set, and
+refuse a driver attempt two committed leaves claim (`duplicate usage owner`). A
+scored nested row with no committed companion is a `harness_error`
+(`usage_companion_unretained`), so a nested trial needs `--artifacts-dir`.
+`report --usage-from ROOT` reads the companions from the retained root, checks
+each leaf's row against the input, and `report --page` then computes the
+group's tokens per success from them alone, under accepted 0136: the checked
+sum of `input_tokens + output_tokens` over every scored trial, divided by the
+passes. Cache reads and writes, turns and cost are reported beside it, each on
+its own availability. A gap is a typed reason (`incomplete_attribution`,
+`missing_required_count`, `sum_overflow`, `no_passes`). Without `--usage-from`
+a report holding a scored nested row refuses
+(`nested_usage_requires_artifacts`); a journal figure never fills it. Rows of
+the superseded via-brokkr profiles never ran nested and read as before.
 
-## The first authenticated via-brokkr smoke, per family (operator-owned)
+Two limits differ from the direct route. A trial the runner kills at its
+hard deadline kills its wrapper before the receipt is written: that session's
+entry is `receipt_missing`, every one of its facts is unavailable, and one
+such scored trial makes its group's tokens per success
+`missing_required_count` (the receipt is not written on termination; the
+figure is withheld, never partial). And a nested session counts as completed
+only when the driver returns a fresh `done` or `stuck` result file; a model
+that does the mail work but writes no result is a `harness_error`, not a
+scored attempt, so the two routes' failure classes are not comparable. `wrappers.md` describes the
+selection, the exchange, the endings and the proofs. Structural tool-call
+records landed with #316, and value-bearing records and transcripts with #391.
 
-**Not run by any delivery seat.** It needs authenticated paid hands, which no
-seat holds. It is the observation 0119 §§5–6 wait for, and nothing in the
-code may guess its result (0119 ruling 4): `--via-brokkr` keeps refusing
-`driver_contract_unknown` before any launch until §5 carries the dated
-addendum, and via-brokkr tokens stay `null` until §6 carries one.
+## The authenticated finished-path session, per family (operator-owned)
 
-Set absolute paths first: `E` the candidate's `swarmail-evals`
-(`evals/target/debug/swarmail-evals` after
-`cargo build --locked --manifest-path evals/Cargo.toml` from the repository
-root; `evals/` is its own workspace, so a plain root `cargo build` does not
-build it), `B` the
-digest-verified pinned brokkr (`.brokkr/recipes/self/tooling.json` names its
-version and digest), `controls` a JSON agents file holding only
-`{"label":"oracle","argv":[]}` and `{"label":"null","argv":[]}`, `DB` the
-journal (`.brokkr/state/forge.db`), and `W` a fresh private work directory
-inside the workspace (`mkdir -m 700`).
+**Not run by any delivery seat.** It is the only paid step of #404 (accepted
+0137, acceptance criterion 4) and needs authenticated paid hands, which no seat
+holds. For each family (claude, codex, dsh):
 
-1. **Free preflight.** From the repository root:
-   `"$E" matrix --brokkr "$B" --tasks signup --agents "$controls" --trials 1 --artifacts-dir "$W/free" > "$W/free.rows"`.
-   Expect two rows: oracle `pass`, null `fail`/`gave_up`, and each slot's
-   `score.json` business verdict matching its row. Stop here if it does not:
-   the engine itself is then the gap, not the family.
-2. **Discover the invocation (F2).** For each pinned family (`claude`,
-   `codex`, `dsh`): read `"$B" driver --help` and `"$B" driver "$family" --help`.
-   From that installation resolve the executable the driver launches, how the
-   goal is passed (argument, stdin or file), the supported flags and the
-   authenticated setup it expects. If any of these is undocumented or
-   unreachable, stop and record the gap. Otherwise, in a private operator exec
-   seat holding the intended paid hands, run exactly one minimal synthetic goal
-   with the discovered argv. The production wrapper still refuses, so this probe
-   is run by hand. Record only the argv's shape (flags, positions, transport),
-   never raw output or credential contents.
-3. **Observe hands and accounting (F5, F1).** For that seat verify that the
-   selected executable, its install, config and auth files, the slot and the
-   required network posture were each reachable. Record roles and outcomes,
-   not contents (F5). Then read `"$B" export --db "$DB"` through a private
-   projection of finite fields for that run and its trial seat: confirm the
-   seat is linked to the run and whether typed input, output and cached token
-   units are present, or record that they are unavailable (F1). Trace the
-   channel that carried them through every seam (`trial.sh`'s `env -i`, the
-   runner's clean environment, the wrapper's `env_clear`, the driver's stream
-   disposal; `wrappers.md`). A count whose channel cannot be traced does not
-   establish one.
-4. **Record, by dated addendum.** The sanitized argv shape and goal
-   transport (F2) go to 0119 §5. The accounting channel actually observed, or
-   the upstream gap (F1), goes to 0119 §6. The family, CLI and brokkr
-   versions, verified hands or gaps, and the seat linkage go to the F1/F2/F5
-   table in `specs/eval-brokkr-recipe/implementation.md` (T31).
+1. Extract brokkr v0.15.2's `brokkr-linux-x86_64.tar.gz`, check it against
+   the release's `SHA256SUMS`, and add the family's `nested` member to the
+   private version-2 selection (`wrappers.md`). Use `driver_sha256` =
+   `61cba4ee438eb0bd0dbc223f7d394219238aeecc061250e36281a4989e455062`, the
+   extracted executable's digest; any other digest refuses
+   `driver_release_unrecognized` before anything runs. For codex, set
+   `codex_sandbox` to `workspace-write` (proposed for this session;
+   `read-only` is the other admitted class, and `danger-full-access` refuses
+   `driver_sandbox_unconfined`).
+2. Run the free controls first:
+   `"$E" trial --task signup --agent oracle` and `--agent null` must pass and
+   fail as always.
+3. Run the session through a verified binding: a bare `trial` with a nested
+   paid selection fails closed (`paid_unbound`, the driver never starts).
+   Use the host baseline's nested product
+   (`"$E" baseline --via-brokkr "$BROKKR" ...`, authorized by the
+   `product_id` its dry run prints, run from a release build), whose
+   coordinator grants each trial's launch on its private endpoint. The eval
+   recipe with its F5 binds serves dsh only until the operator rules on
+   read-only claude and codex auth. No
+   smaller single-trial paid entry point exists; choosing the product is the
+   operator's.
+4. Check the committed leaf: `usage.json` is bound in `metadata.json`, its
+   `source` is `via_brokkr_driver`, its `trial_id` is the row's, and every
+   session's `input_tokens` and `output_tokens` are present (non-null)
+   (`report --usage-from` reads it). For codex, the row must not be
+   `harness_error` with `driver_result_missing`: that would mean the class
+   could not write the result. Record only typed, sanitized facts: the family,
+   the versions, the profile, the disposition and which facts are present.
+   Never record a transcript or a credential.
 
-Forwarding the observed channel, declaring the paid binds, lifting the
-refusal and the next comparable paid matrix are separate, operator-dependent
-work. Which source counts paid tokens, and which run is the "30% below the
-baseline" reference, are proposed decision
-[0136](../docs/decisions/0136-paid-token-reference.md)'s questions.
+The prospective reference is a separate measurement: 0136's 16 default tasks
+× six models × five trials. It runs as the nested paid product,
+`"$E" baseline --config "$SELECTION" --output "$W/ref" --via-brokkr "$BROKKR"`,
+authorized by the `product_id` its dry run prints (`wrappers.md`).
 
 ## Honest limits
 
@@ -1187,13 +1232,12 @@ baseline" reference, are proposed decision
   download; it does not measure MCP attachment retrieval (#159).
 - **support-reply** replies through the app's HTTP form with the mailed
   challenge; it does not measure Swarmail inbound reply transport (#160).
-- Tokens, turns and cost are not in the rows (the rows do not change). They
-  come from brokkr's journal, joined by trial id (next section). A paid run
-  alone measures none of them: `--via-brokkr` refuses `driver_contract_unknown`
-  until a follow-up forwards the observed accounting channel (brokkr facts F1
-  and F2, `wrappers.md`) and records it under 0119 §6 (accepted 2026-11-06). Until then
-  the #151 baseline still lacks tokens per success and per-trial tool-call
-  records. No model was run in this batch.
+- Tokens, turns and cost of a direct launch are not in the rows. They come
+  from brokkr's journal, joined by trial id (next section). A nested
+  (`--via-brokkr`) trial's figures come from its harness-authored usage companion in
+  the retained leaf instead, never from the row or the journal. No authenticated session has run through that route yet: that is
+  the operator's step above, and the #151 baseline's tokens per success waits
+  for it.
 
 ## Private artifact publication (proposed 0075, renumbered from 0062)
 

@@ -580,7 +580,7 @@ fn helper_agent() {
                     ..Default::default()
                 };
                 let row = runner::refused_row(&req, &cell.trial_id);
-                a::retain_trial(&run.join("trials"), &row, None).unwrap();
+                a::retain_trial(&run.join("trials"), &row, None, None).unwrap();
                 std::fs::write(
                     root.join("original-metadata"),
                     std::fs::read(
@@ -1412,7 +1412,7 @@ fn publication_guard_refuses_supplied_state_before_any_result_or_state_bytes() {
         ..Default::default()
     };
     assert_eq!(
-        a::retain_trial(root.path(), &row, Some(&snap)).unwrap_err(),
+        a::retain_trial(root.path(), &row, Some(&snap), None).unwrap_err(),
         "noncanonical snapshot claim"
     );
     let dest = root.path().join(&row.trial_id);
@@ -1423,7 +1423,7 @@ fn publication_guard_refuses_supplied_state_before_any_result_or_state_bytes() {
         artifacts_dir: Some(root.path().into()),
         ..req
     };
-    let refused = runner::finalize(&req, row.clone(), Some(&snap));
+    let refused = runner::finalize(&req, row.clone(), Some(&snap), None);
     assert_eq!(refused.outcome, Outcome::HarnessError);
     assert_eq!(refused.exit_code(), 2);
     assert_eq!(

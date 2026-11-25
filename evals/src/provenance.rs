@@ -282,6 +282,12 @@ pub struct CommandIdentity {
     pub sha256: String,
 }
 /// Declared recipe, never an observed tool inventory or binary attestation.
+///
+/// The approved set is accepted 0137's 2026-11-23 amendment: Claude Code
+/// 2.1.329, codex-cli 0.166.0 and dsh 0.2.2-rc.1, each direct or through a
+/// brokkr driver. The superseded selectors (2.1.310, 0.164.0, 0.1.5-rc.1)
+/// stay decodable so published rows keep their exact bytes, and refuse
+/// everywhere a run selects a CLI ([`WrapperProfile::approved`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 #[value(rename_all = "snake_case")]
@@ -307,13 +313,33 @@ pub enum WrapperProfile {
     #[serde(rename = "dsh_0_1_5_rc_1_via_brokkr")]
     #[value(name = "dsh_0_1_5_rc_1_via_brokkr")]
     Dsh0_1_5Rc1ViaBrokkr,
+    #[serde(rename = "claude_2_1_329")]
+    #[value(name = "claude_2_1_329")]
+    Claude2_1_329,
+    #[serde(rename = "codex_0_166_0")]
+    #[value(name = "codex_0_166_0")]
+    Codex0_166_0,
+    #[serde(rename = "dsh_0_2_2_rc_1")]
+    #[value(name = "dsh_0_2_2_rc_1")]
+    Dsh0_2_2Rc1,
+    #[serde(rename = "claude_2_1_329_via_brokkr")]
+    #[value(name = "claude_2_1_329_via_brokkr")]
+    Claude2_1_329ViaBrokkr,
+    #[serde(rename = "codex_0_166_0_via_brokkr")]
+    #[value(name = "codex_0_166_0_via_brokkr")]
+    Codex0_166_0ViaBrokkr,
+    #[serde(rename = "dsh_0_2_2_rc_1_via_brokkr")]
+    #[value(name = "dsh_0_2_2_rc_1_via_brokkr")]
+    Dsh0_2_2Rc1ViaBrokkr,
 }
 impl WrapperProfile {
+    /// The approved direct selectors (accepted 0137, 2026-11-23 amendment).
+    pub const APPROVED: [Self; 3] = [Self::Claude2_1_329, Self::Codex0_166_0, Self::Dsh0_2_2Rc1];
     pub fn family(self) -> &'static str {
-        match self {
-            Self::Claude2_1_310 | Self::Claude2_1_310ViaBrokkr => "claude",
-            Self::Codex0_164_0 | Self::Codex0_164_0ViaBrokkr => "codex",
-            Self::Dsh0_1_5Rc1 | Self::Dsh0_1_5Rc1ViaBrokkr => "dsh",
+        match self.direct() {
+            Self::Claude2_1_310 | Self::Claude2_1_329 => "claude",
+            Self::Codex0_164_0 | Self::Codex0_166_0 => "codex",
+            _ => "dsh",
         }
     }
     pub fn name(self) -> &'static str {
@@ -324,14 +350,30 @@ impl WrapperProfile {
             Self::Claude2_1_310ViaBrokkr => "claude_2_1_310_via_brokkr",
             Self::Codex0_164_0ViaBrokkr => "codex_0_164_0_via_brokkr",
             Self::Dsh0_1_5Rc1ViaBrokkr => "dsh_0_1_5_rc_1_via_brokkr",
+            Self::Claude2_1_329 => "claude_2_1_329",
+            Self::Codex0_166_0 => "codex_0_166_0",
+            Self::Dsh0_2_2Rc1 => "dsh_0_2_2_rc_1",
+            Self::Claude2_1_329ViaBrokkr => "claude_2_1_329_via_brokkr",
+            Self::Codex0_166_0ViaBrokkr => "codex_0_166_0_via_brokkr",
+            Self::Dsh0_2_2Rc1ViaBrokkr => "dsh_0_2_2_rc_1_via_brokkr",
         }
     }
     /// True for the selectors that declare a launch through a brokkr driver.
     pub fn via_brokkr(self) -> bool {
-        matches!(
-            self,
-            Self::Claude2_1_310ViaBrokkr | Self::Codex0_164_0ViaBrokkr | Self::Dsh0_1_5Rc1ViaBrokkr
-        )
+        self.direct() != self
+    }
+    /// The selector that launches this one's configuration through a brokkr
+    /// driver (itself when it already does).
+    pub fn via(self) -> Self {
+        match self {
+            Self::Claude2_1_310 => Self::Claude2_1_310ViaBrokkr,
+            Self::Codex0_164_0 => Self::Codex0_164_0ViaBrokkr,
+            Self::Dsh0_1_5Rc1 => Self::Dsh0_1_5Rc1ViaBrokkr,
+            Self::Claude2_1_329 => Self::Claude2_1_329ViaBrokkr,
+            Self::Codex0_166_0 => Self::Codex0_166_0ViaBrokkr,
+            Self::Dsh0_2_2Rc1 => Self::Dsh0_2_2Rc1ViaBrokkr,
+            other => other,
+        }
     }
     /// The direct-launch selector whose declared configuration this one shares.
     pub fn direct(self) -> Self {
@@ -339,8 +381,17 @@ impl WrapperProfile {
             Self::Claude2_1_310ViaBrokkr => Self::Claude2_1_310,
             Self::Codex0_164_0ViaBrokkr => Self::Codex0_164_0,
             Self::Dsh0_1_5Rc1ViaBrokkr => Self::Dsh0_1_5Rc1,
+            Self::Claude2_1_329ViaBrokkr => Self::Claude2_1_329,
+            Self::Codex0_166_0ViaBrokkr => Self::Codex0_166_0,
+            Self::Dsh0_2_2Rc1ViaBrokkr => Self::Dsh0_2_2Rc1,
             other => other,
         }
+    }
+    /// Whether a run may still select this profile's CLI: only the three
+    /// amended versions, direct or through the driver. A superseded selector
+    /// decodes (published rows) and refuses as `profile_superseded`.
+    pub fn approved(self) -> bool {
+        Self::APPROVED.contains(&self.direct())
     }
     pub fn validate_model(self, model: Option<&str>) -> Result<(), String> {
         crate::wrappers::validate_model(self.family(), model.ok_or("wrapper_model_missing")?)
@@ -350,7 +401,10 @@ impl WrapperProfile {
         match self.direct() {
             Self::Claude2_1_310 => "2.1.310",
             Self::Codex0_164_0 => "0.164.0",
-            _ => "0.1.5-rc.1",
+            Self::Dsh0_1_5Rc1 => "0.1.5-rc.1",
+            Self::Claude2_1_329 => "2.1.329",
+            Self::Codex0_166_0 => "0.166.0",
+            _ => "0.2.2-rc.1",
         }
     }
 }
@@ -373,10 +427,20 @@ pub enum ToolSurface {
         residuals: Vec<String>,
     },
 }
+/// The Codex sandbox classes a nested selection may run (the operator's
+/// 2026-11-24 ruling on #404); `danger-full-access` is refused before any
+/// row exists.
+pub const CODEX_CLASSES: [&str; 2] = ["read-only", "workspace-write"];
 impl ToolSurface {
     pub fn declared(profile: WrapperProfile) -> Self {
-        let (restrictions, residuals): (&[&str], &[&str]) = match profile.direct() {
-            WrapperProfile::Claude2_1_310 => (
+        Self::declared_class(profile, None)
+    }
+    /// The declared surface, with the Codex sandbox class the selection
+    /// actually names under the driver (hold 4 on a73ac17a). `None` is a
+    /// class that could not be read: such a selection never launches.
+    pub fn declared_class(profile: WrapperProfile, codex_class: Option<&str>) -> Self {
+        let (restrictions, residuals): (&[&str], &[&str]) = match profile.family() {
+            "claude" => (
                 &[
                     "empty builtins",
                     "strict two-server MCP",
@@ -391,7 +455,7 @@ impl ToolSurface {
                     "unconfined; same-uid access",
                 ],
             ),
-            WrapperProfile::Codex0_164_0 => (
+            "codex" => (
                 &[
                     "read-only sandbox",
                     "web search disabled",
@@ -407,7 +471,7 @@ impl ToolSurface {
                     "unconfined; same-uid access",
                 ],
             ),
-            WrapperProfile::Dsh0_1_5Rc1 => (
+            _ => (
                 &[
                     "fresh DSH_HOME",
                     "overlay-only MCP servers",
@@ -420,27 +484,78 @@ impl ToolSurface {
                     "unconfined; same-uid access",
                 ],
             ),
-            _ => unreachable!("direct() returns a direct selector"),
         };
         let mut residuals: Vec<String> = residuals.iter().map(|s| s.to_string()).collect();
+        let mut restrictions: Vec<String> = restrictions.iter().map(|s| s.to_string()).collect();
         if profile.via_brokkr() {
+            // The nested route applies its own launch, not the direct one's
+            // flags: each amended family's descriptor names what it passes.
+            // A superseded via profile never launched the driver
+            // (`driver_contract_unknown`); its published rows keep the
+            // descriptor they were written with.
+            match profile.family() {
+                _ if !profile.approved() => {}
+                "claude" => {
+                    restrictions = vec![
+                        "permission mode acceptEdits".into(),
+                        "two declared MCP servers (user scope)".into(),
+                        "explicit MCP tool permissions (settings)".into(),
+                        "model and effort flags".into(),
+                    ];
+                    residuals.push("builtin tools, settings and skills not restricted".into());
+                }
+                "codex" => {
+                    restrictions = vec![
+                        match codex_class {
+                            Some(class) => format!("{class} sandbox (driver-selected)"),
+                            None => "driver sandbox class unread".into(),
+                        },
+                        "web search disabled".into(),
+                        "fresh CODEX_HOME configuration".into(),
+                        "two declared MCP servers".into(),
+                        "model and effort flags".into(),
+                    ];
+                    residuals.push("ephemeral session and rule exclusion not applied".into());
+                }
+                _ => {}
+            }
             residuals.push("brokkr driver flags unenumerated".to_string());
         }
         Self::Wrapper {
             revision: 1,
             basis: SurfaceBasis::DeclaredConfiguration,
             profile,
-            restrictions: restrictions.iter().map(|s| s.to_string()).collect(),
+            restrictions,
             residuals,
         }
     }
-    pub fn for_request(valid: bool, builtin: bool, profile: Option<WrapperProfile>) -> Self {
+    pub fn for_request(
+        valid: bool,
+        builtin: bool,
+        profile: Option<WrapperProfile>,
+        codex_class: Option<&str>,
+    ) -> Self {
         if !valid {
             Self::InvalidRequest
         } else if builtin {
             Self::BuiltinNotApplicable
         } else {
-            profile.map(Self::declared).unwrap_or(Self::ExternalUnknown)
+            profile
+                .map(|p| Self::declared_class(p, codex_class))
+                .unwrap_or(Self::ExternalUnknown)
+        }
+    }
+    /// Whether this is a surface the profile can declare: under the driver,
+    /// Codex's with one of the admitted classes or an unread one.
+    fn admitted(&self, profile: WrapperProfile) -> bool {
+        if profile.via_brokkr() && profile.approved() && profile.family() == "codex" {
+            CODEX_CLASSES
+                .iter()
+                .map(|c| Some(*c))
+                .chain([None])
+                .any(|c| *self == Self::declared_class(profile, c))
+        } else {
+            *self == Self::declared(profile)
         }
     }
     pub fn validate(&self, kind: AgentKind, model: &Availability<String>) -> Result<(), String> {
@@ -448,9 +563,7 @@ impl ToolSurface {
             (Self::BuiltinNotApplicable, AgentKind::Builtin)
             | (Self::ExternalUnknown, AgentKind::External)
             | (Self::InvalidRequest, AgentKind::Invalid) => Ok(()),
-            (Self::Wrapper { profile, .. }, AgentKind::External)
-                if *self == Self::declared(*profile) =>
-            {
+            (Self::Wrapper { profile, .. }, AgentKind::External) if self.admitted(*profile) => {
                 profile.validate_model(match model {
                     Availability::Present { value, .. } => Some(value),
                     _ => None,
@@ -486,13 +599,15 @@ pub struct CliIdentity {
     pub sha256: String,
 }
 impl CliIdentity {
-    /// A binding agrees with the row's declared direct wrapper surface, names
-    /// that profile's exact version and carries a lowercase SHA-256.
+    /// A binding agrees with the row's declared wrapper surface, names that
+    /// profile's exact version and carries a lowercase SHA-256. Under an
+    /// amended `*_via_brokkr` profile the digest is the nested identity: the
+    /// CLI's pin with the driver's (route (b), proposed 0138).
     pub fn validate(&self, surface: &ToolSurface) -> Result<(), String> {
         match surface {
             ToolSurface::Wrapper { profile, .. }
                 if *profile == self.profile
-                    && !profile.via_brokkr()
+                    && profile.approved()
                     && self.version == profile.cli_version()
                     && is_hash(&self.sha256) =>
             {
@@ -740,16 +855,49 @@ where
 mod via_brokkr_tests {
     use super::*;
 
-    const DIRECT: [WrapperProfile; 3] = [
+    const DIRECT: [WrapperProfile; 6] = [
         WrapperProfile::Claude2_1_310,
         WrapperProfile::Codex0_164_0,
         WrapperProfile::Dsh0_1_5Rc1,
+        WrapperProfile::Claude2_1_329,
+        WrapperProfile::Codex0_166_0,
+        WrapperProfile::Dsh0_2_2Rc1,
     ];
-    const VIA: [WrapperProfile; 3] = [
+    const VIA: [WrapperProfile; 6] = [
         WrapperProfile::Claude2_1_310ViaBrokkr,
         WrapperProfile::Codex0_164_0ViaBrokkr,
         WrapperProfile::Dsh0_1_5Rc1ViaBrokkr,
+        WrapperProfile::Claude2_1_329ViaBrokkr,
+        WrapperProfile::Codex0_166_0ViaBrokkr,
+        WrapperProfile::Dsh0_2_2Rc1ViaBrokkr,
     ];
+
+    #[test]
+    fn the_approved_set_is_exactly_the_three_amended_profiles() {
+        let approved: Vec<_> = DIRECT.into_iter().filter(|p| p.approved()).collect();
+        assert_eq!(approved, WrapperProfile::APPROVED);
+        for (profile, version) in
+            WrapperProfile::APPROVED
+                .into_iter()
+                .zip(["2.1.329", "0.166.0", "0.2.2-rc.1"])
+        {
+            assert_eq!(profile.cli_version(), version);
+        }
+        // A superseded selector still decodes (published rows keep their
+        // bytes) and names its own version, but is never approved, direct or
+        // through the driver.
+        for (profile, version) in DIRECT[..3].iter().zip(["2.1.310", "0.164.0", "0.1.5-rc.1"]) {
+            assert_eq!(profile.cli_version(), version);
+            assert!(!profile.approved());
+        }
+        assert!(VIA[..3].iter().all(|p| !p.approved()));
+        assert!(VIA[3..].iter().all(|p| p.approved()));
+        let families: Vec<_> = DIRECT.iter().map(|p| p.family()).collect();
+        assert_eq!(
+            families,
+            ["claude", "codex", "dsh", "claude", "codex", "dsh"]
+        );
+    }
 
     #[test]
     fn each_via_brokkr_selector_round_trips_by_its_finite_name() {
@@ -794,8 +942,13 @@ mod via_brokkr_tests {
         }
     }
 
+    /// Each route's descriptor names what that route applies (the panel's
+    /// correctness 5 on a73ac17a): the nested claude launch passes only
+    /// acceptEdits, model and effort, so none of the direct launch's flag
+    /// restrictions is claimed for it, and the nested codex descriptor names
+    /// the class the selection runs (hold 4).
     #[test]
-    fn a_via_brokkr_surface_differs_from_the_direct_one_only_by_the_driver_residual() {
+    fn a_via_brokkr_surface_names_what_its_route_applies() {
         for (direct, via) in DIRECT.into_iter().zip(VIA) {
             let (
                 ToolSurface::Wrapper {
@@ -818,16 +971,67 @@ mod via_brokkr_tests {
             };
             assert_eq!(profile, via);
             assert_eq!((revision, basis), (direct_revision, direct_basis));
-            assert_eq!(restrictions, direct_restrictions);
             assert_eq!(residuals[..direct_residuals.len()], direct_residuals[..]);
             assert_eq!(
-                residuals[direct_residuals.len()..],
-                ["brokkr driver flags unenumerated".to_string()]
+                residuals.last().map(String::as_str),
+                Some("brokkr driver flags unenumerated")
             );
+            match via.family() {
+                // A superseded via profile keeps its published descriptor.
+                _ if !via.approved() => assert_eq!(restrictions, direct_restrictions),
+                "claude" => {
+                    for direct_only in [
+                        "empty builtins",
+                        "strict two-server MCP",
+                        "restricted settings",
+                        "disabled skills",
+                    ] {
+                        assert!(direct_restrictions.iter().any(|r| r == direct_only));
+                        assert!(
+                            !restrictions.iter().any(|r| r == direct_only),
+                            "{direct_only}"
+                        );
+                    }
+                    assert_eq!(restrictions[0], "permission mode acceptEdits");
+                }
+                "codex" => {
+                    assert_eq!(direct_restrictions[0], "read-only sandbox");
+                    assert_eq!(restrictions[0], "driver sandbox class unread");
+                    for class in CODEX_CLASSES {
+                        let surface = ToolSurface::declared_class(via, Some(class));
+                        let ToolSurface::Wrapper { restrictions, .. } = &surface else {
+                            panic!("a wrapper surface");
+                        };
+                        assert_eq!(
+                            restrictions[0],
+                            format!("{class} sandbox (driver-selected)")
+                        );
+                        assert_eq!(
+                            ToolSurface::for_request(true, false, Some(via), Some(class)),
+                            surface
+                        );
+                        let model = Availability::present(
+                            "gpt-6-luna".to_string(),
+                            Source::OperatorDeclared,
+                        );
+                        assert!(surface.validate(AgentKind::External, &model).is_ok());
+                    }
+                    assert_ne!(
+                        ToolSurface::declared_class(via, Some("read-only")),
+                        ToolSurface::declared_class(via, Some("workspace-write"))
+                    );
+                    // A class outside the admitted two is no declared surface.
+                    let forged = ToolSurface::declared_class(via, Some("danger-full-access"));
+                    let model =
+                        Availability::present("gpt-6-luna".to_string(), Source::OperatorDeclared);
+                    assert!(forged.validate(AgentKind::External, &model).is_err());
+                }
+                _ => assert_eq!(restrictions, direct_restrictions),
+            }
             assert_ne!(ToolSurface::declared(via), ToolSurface::declared(direct));
             // The request-level constructor accepts a via-brokkr profile like any other.
             assert_eq!(
-                ToolSurface::for_request(true, false, Some(via)),
+                ToolSurface::for_request(true, false, Some(via), None),
                 ToolSurface::declared(via)
             );
         }
@@ -854,36 +1058,71 @@ mod cli_identity_tests {
 
     #[test]
     fn a_cli_binding_must_match_its_direct_surface_version_and_digest() {
-        let surface = ToolSurface::declared(WrapperProfile::Codex0_164_0);
+        let surface = ToolSurface::declared(WrapperProfile::Codex0_166_0);
         let good = CliIdentity {
-            profile: WrapperProfile::Codex0_164_0,
-            version: "0.164.0".into(),
+            profile: WrapperProfile::Codex0_166_0,
+            version: "0.166.0".into(),
             sha256: "a".repeat(64),
         };
         assert!(good.validate(&surface).is_ok());
         let mut other = good.clone();
-        other.profile = WrapperProfile::Claude2_1_310;
+        other.profile = WrapperProfile::Claude2_1_329;
         assert!(other.validate(&surface).is_err());
+        // A superseded profile's binding refuses even against its own surface.
+        let old = CliIdentity {
+            profile: WrapperProfile::Codex0_164_0,
+            version: "0.164.0".into(),
+            sha256: "a".repeat(64),
+        };
+        assert!(
+            old.validate(&ToolSurface::declared(WrapperProfile::Codex0_164_0))
+                .is_err()
+        );
         let mut version = good.clone();
         version.version = "0.165.0".into();
         assert!(version.validate(&surface).is_err());
         let mut digest = good.clone();
         digest.sha256 = "A".repeat(64);
         assert!(digest.validate(&surface).is_err());
+        // An amended via-brokkr binding holds against its own surface only.
         let mut via = good.clone();
-        via.profile = WrapperProfile::Codex0_164_0ViaBrokkr;
+        via.profile = WrapperProfile::Codex0_166_0ViaBrokkr;
+        let via_surface = ToolSurface::declared(WrapperProfile::Codex0_166_0ViaBrokkr);
+        assert!(via.validate(&via_surface).is_ok());
+        // The nested descriptor never claims the direct launch's class.
+        let ToolSurface::Wrapper { restrictions, .. } = &via_surface else {
+            panic!("a wrapper surface");
+        };
+        assert!(!restrictions.iter().any(|r| r == "read-only sandbox"));
+        assert_eq!(restrictions[0], "driver sandbox class unread");
+        assert!(via.validate(&surface).is_err());
+        assert!(good.validate(&via_surface).is_err());
+        let mut old_via = old.clone();
+        old_via.profile = WrapperProfile::Codex0_164_0ViaBrokkr;
         assert!(
-            via.validate(&ToolSurface::declared(
-                WrapperProfile::Codex0_164_0ViaBrokkr
-            ))
-            .is_err()
+            old_via
+                .validate(&ToolSurface::declared(
+                    WrapperProfile::Codex0_164_0ViaBrokkr
+                ))
+                .is_err()
         );
+        for p in [
+            WrapperProfile::Claude2_1_310,
+            WrapperProfile::Codex0_164_0,
+            WrapperProfile::Dsh0_1_5Rc1,
+            WrapperProfile::Claude2_1_329,
+            WrapperProfile::Codex0_166_0,
+            WrapperProfile::Dsh0_2_2Rc1,
+        ] {
+            assert!(p.via().via_brokkr() && p.via().direct() == p);
+            assert_eq!(p.via().via(), p.via());
+        }
         assert!(good.validate(&ToolSurface::ExternalUnknown).is_err());
         // Absent on every other row: the serialized agent keeps its bytes.
         let json = serde_json::to_value(&good).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({"profile":"codex_0_164_0","version":"0.164.0","sha256":"a".repeat(64)})
+            serde_json::json!({"profile":"codex_0_166_0","version":"0.166.0","sha256":"a".repeat(64)})
         );
     }
 }

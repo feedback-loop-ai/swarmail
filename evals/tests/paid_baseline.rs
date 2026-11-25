@@ -167,6 +167,22 @@ fn every_contract_refusal_names_its_family_and_cause_before_any_spend() {
     refuse("contract claude: auth_shape_unsupported");
     p.select(|v| v["families"]["claude"]["profile"] = json!("claude_2_1_310_via_brokkr"));
     refuse("contract claude: profile_mismatch");
+    // The superseded profiles left the approved set (accepted 0137's
+    // 2026-11-23 amendment), even beside their own version.
+    for (family, old, version) in [
+        ("claude", "claude_2_1_310", "2.1.310"),
+        ("codex", "codex_0_164_0", "0.164.0"),
+        ("dsh", "dsh_0_1_5_rc_1", "0.1.5-rc.1"),
+    ] {
+        p.select(|v| {
+            v["families"][family]["profile"] = json!(old);
+            v["families"][family]["cli_version"] = json!(version);
+        });
+        refuse(&format!("contract {family}: profile_superseded"));
+    }
+    // dsh runs only as an interpreted package under its full pin (accepted
+    // 0137's 2026-11-23 amendment): every mutation refuses before spend.
+    dsh_pin_refusals(&p, &refuse);
     // An opaque forwarding path cannot establish identity.
     let link = p.dir.path().join("codex-link");
     std::os::unix::fs::symlink(p.bin("codex"), &link).unwrap();
@@ -493,7 +509,10 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     p.write_cli("dsh", banner("dsh"));
     let (code, _, err) = run(&mut p.authorized(&["--resume"]));
     assert_eq!(code, Some(2));
-    assert!(err.contains("contract dsh: digest_mismatch"), "{err}");
+    assert!(
+        err.contains("contract dsh: runtime_digest_mismatch"),
+        "{err}"
+    );
     p.select(|_| {});
     // A different margin is a different run.
     let (code, _, err) = run(&mut p.authorized(&["--resume", "--freshness-minutes", "71"]));
@@ -588,7 +607,12 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
             json!({
                 "profile": profile(family),
                 "version": profile(family).cli_version(),
-                "sha256": swarmail_evals::identity::file_hash(&p.bin(family)).unwrap(),
+                // dsh's identity is its interpreted pin's, runtime and package.
+                "sha256": if family == "dsh" {
+                    p.dsh_pin().identity()
+                } else {
+                    swarmail_evals::identity::file_hash(&p.bin(family)).unwrap()
+                },
             })
         );
     }
@@ -632,6 +656,31 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
     assert_eq!(sum("attempts"), 30 + unscored.len() as u64);
     assert_eq!(sum("harness_errors"), unscored.len() as u64);
     assert_eq!(sum("scored"), 30);
+    // The printed report command reads the retained companions with the
+    // same verified reader as report.json (part of #404): it runs as
+    // printed, over the same scored slots.
+    let printed = cli()
+        .args(["report", "--input"])
+        .arg(p.output.join("paid.jsonl"))
+        .arg("--usage-from")
+        .arg(p.output.join("paid"))
+        .output()
+        .unwrap();
+    assert_eq!(printed.status.code(), Some(0), "{printed:?}");
+    let printed: Value = serde_json::from_slice(&printed.stdout).unwrap();
+    assert_eq!(
+        printed["groups"].as_array().unwrap().len(),
+        report["groups"].as_array().unwrap().len()
+    );
+    let scored = |r: &Value| -> u64 {
+        r["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["scored"].as_u64().unwrap())
+            .sum()
+    };
+    assert_eq!(scored(&printed), 30);
     for bytes in unscored {
         assert!(
             contains(bytes, "\"cli\":{\"profile\":"),
@@ -774,6 +823,73 @@ fn one_command_gates_on_controls_defers_stale_logins_and_resumes_by_slot() {
 }
 
 /// Replace `family`'s CLI with different bytes that still answer its banner.
+fn dsh_pin_refusals(p: &Paid, refuse: &dyn Fn(&str)) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = |path: &std::path::Path, m: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(m)).unwrap()
+    };
+    // A native family never carries a pin, and dsh never runs without one.
+    p.select(|v| {
+        v["families"]["claude"]["interpreted"] = v["families"]["dsh"]["interpreted"].clone()
+    });
+    refuse("contract claude: interpreted_pin_unexpected");
+    p.select(|v| {
+        v["families"]["dsh"]
+            .as_object_mut()
+            .unwrap()
+            .remove("interpreted");
+    });
+    refuse("contract dsh: interpreted_pin_missing");
+    // A shim in place of the entry, or of the runtime, refuses by name.
+    p.select(|v| v["families"]["dsh"]["executable"] = json!(p.bin("dsh")));
+    refuse("contract dsh: executable_not_entry");
+    let shim = p.dir.path().join("node-shim");
+    std::os::unix::fs::symlink(p.bin("dsh"), &shim).unwrap();
+    let pin =
+        swarmail_evals::interpreted::pin(&shim, NODE_BANNER, &p.package(), DSH_ENTRY).unwrap();
+    p.select(|v| {
+        v["families"]["dsh"]["cli_sha256"] = json!(pin.identity());
+        v["families"]["dsh"]["interpreted"] = json!(pin);
+    });
+    refuse("contract dsh: runtime_executable_unsafe");
+    // A changed runtime binary or banner.
+    p.select(|v| v["families"]["dsh"]["interpreted"]["runtime_version"] = json!("v22.11.1"));
+    refuse("contract dsh: digest_mismatch");
+    let mut pin = p.dsh_pin();
+    pin.runtime_version = "v22.11.1".into();
+    p.select(|v| {
+        v["families"]["dsh"]["cli_sha256"] = json!(pin.identity());
+        v["families"]["dsh"]["interpreted"] = json!(pin);
+    });
+    refuse("contract dsh: runtime_version_mismatch");
+    p.select(|_| {});
+    rotate(p, "dsh");
+    refuse("contract dsh: runtime_digest_mismatch");
+    p.write_cli("dsh", banner("dsh"));
+    // A changed, an extra and a missing package file, and a link leaving
+    // the package root.
+    let package = p.package();
+    let entry = package.join(DSH_ENTRY);
+    std::fs::write(&entry, "// changed\n").unwrap();
+    refuse("contract dsh: package_file_changed");
+    std::fs::write(&entry, "// dsh entry\n").unwrap();
+    let extra = package.join("extra.js");
+    std::fs::write(&extra, "").unwrap();
+    mode(&extra, 0o644);
+    refuse("contract dsh: package_file_extra");
+    std::fs::remove_file(&extra).unwrap();
+    let manifest = package.join("package.json");
+    let kept = std::fs::read(&manifest).unwrap();
+    std::fs::remove_file(&manifest).unwrap();
+    refuse("contract dsh: package_file_missing");
+    std::fs::write(&manifest, kept).unwrap();
+    mode(&manifest, 0o644);
+    std::os::unix::fs::symlink(p.cred("dsh"), package.join("escape")).unwrap();
+    refuse("contract dsh: package_symlink_escapes");
+    std::fs::remove_file(package.join("escape")).unwrap();
+    p.select(|_| {});
+}
+
 fn rotate(p: &Paid, family: &str) {
     p.write_cli(family, banner(family));
     let next = p.bin(family).with_extension("rotated");
@@ -1101,5 +1217,278 @@ fn paid_accounting(
                 .sum::<u64>()
         ),
         479
+    );
+}
+
+/// The operator's helper prints exactly the dsh selection's pin members the
+/// harness verifies, and refuses an unpinnable package by its finite reason.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+fn pin_interpreted_prints_the_selection_members_the_contract_verifies() {
+    let p = Paid::new();
+    let pin_command = || {
+        let mut c = cli();
+        c.arg("pin-interpreted")
+            .arg("--runtime")
+            .arg(p.bin("dsh"))
+            .args(["--runtime-version", NODE_BANNER, "--package-root"])
+            .arg(p.package())
+            .args(["--entry", DSH_ENTRY]);
+        run(&mut c)
+    };
+    let (code, out, err) = pin_command();
+    assert_eq!(code, Some(0), "{err}");
+    let pin = p.dsh_pin();
+    let printed: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(
+        printed,
+        json!({"executable": pin.entry_path(), "cli_sha256": pin.identity(), "interpreted": pin})
+    );
+    std::os::unix::fs::symlink(p.cred("dsh"), p.package().join("escape")).unwrap();
+    let (code, out, err) = pin_command();
+    assert_eq!((code, out.as_str()), (Some(2), ""));
+    assert!(
+        err.contains("pin refused: package_symlink_escapes"),
+        "{err}"
+    );
+    assert!(!contains(err.as_bytes(), CANARY));
+}
+
+/// Route (b) through the real `baseline` entry point (part of #404, proposed
+/// 0138): every paid slot runs through one offline stand-in driver, the
+/// baseline's own report reads each committed usage companion, its printed
+/// `report_argv` replays to the same report, and a resume refuses a
+/// companion that claims another leaf's driver attempt or slot and a codex selection
+/// whose sandbox class differs from the retained rows'.
+///
+/// Host-gated for time, not privilege: the smallest product is 32 slots and
+/// takes about 100 s, past the CI test job's budget. It is Linux-only: the
+/// paid launch grant needs Linux's socket peer evidence and `/proc`
+/// (`paid_grant_unsupported` elsewhere). The dispatcher runs it:
+/// `cd evals && cargo test --locked --test paid_baseline -- --ignored a_nested_baseline`.
+#[test]
+#[ignore = "host-gated: a whole nested baseline (~100 s, Linux only: grant endpoints and /proc); run with --ignored"]
+fn a_nested_baseline_reports_its_companions_and_resume_refuses_what_they_contradict() {
+    let _scope = trial_scope();
+    let p = Paid::nested();
+    let finals = json!({
+        "claude": {"step": "claude-code-session-finished", "input_tokens": 41871, "output_tokens": 180, "cache_read_tokens": 41867, "cache_write_tokens": 18455, "num_turns": 2, "total_cost_usd": 0.0798147, "exit_code": 0},
+        "codex": {"step": "codex-session-finished", "input_tokens": 45729, "output_tokens": 244, "cache_read_tokens": 41600, "num_turns": 1, "exit_code": 0},
+        "dsh": {"step": "deepseek-harness-session-finished", "input_tokens": 11497, "output_tokens": 323, "cache_read_tokens": 4096, "num_turns": 2, "exit_code": 0},
+    });
+    let mut by_family = json!({});
+    for f in FAMILIES {
+        by_family[f] = json!([finals[f]]);
+    }
+    p.driver_mode(json!({"mode": "ok", "finals_by_family": by_family}));
+    let (code, out, err) = run(&mut p.authorized(&[]));
+    assert_eq!(
+        code,
+        Some(1),
+        "every stand-in trial is a measured failure: {err}"
+    );
+    // The printed plan's report command reads the companions.
+    let plan: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+    let argv: Vec<String> = serde_json::from_value(plan["report_argv"].clone()).unwrap();
+    assert_eq!(
+        argv[1..],
+        [
+            "report".to_string(),
+            "--input".into(),
+            p.output.join("paid.jsonl").display().to_string(),
+            "--usage-from".into(),
+            p.output.join("paid").display().to_string(),
+        ]
+    );
+    // The baseline's own report reads every nested companion: each group's
+    // figures are its five sessions' sums, never `incomplete_attribution`.
+    let bytes = std::fs::read(p.output.join("report.json")).unwrap();
+    assert!(!contains(&bytes, "incomplete_attribution"));
+    let report: Value = serde_json::from_slice(&bytes).unwrap();
+    let groups = report["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 6);
+    for g in groups {
+        let family = p
+            .plan()
+            .agents
+            .iter()
+            .find(|a| json!(a.label) == g["agent"])
+            .unwrap()
+            .wrapper_profile
+            .unwrap()
+            .family();
+        let usage = g
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|v| v.get("total_definition").is_some())
+            .unwrap_or_else(|| panic!("{g}"));
+        let f = &finals[family];
+        let total =
+            5 * (f["input_tokens"].as_u64().unwrap() + f["output_tokens"].as_u64().unwrap());
+        assert_eq!(usage["scored_trials"], 5, "{usage}");
+        assert_eq!(
+            usage["total_tokens"],
+            json!({"status": "present", "value": total}),
+            "{usage}"
+        );
+        assert_eq!(
+            usage["cache_read_tokens"],
+            json!({"status": "present", "value": 5 * f["cache_read_tokens"].as_u64().unwrap()})
+        );
+        // Every stand-in trial fails: per-success is typed, never zero.
+        assert_eq!(
+            usage["tokens_per_success"],
+            json!({"status": "unavailable", "reason": "no_passes"})
+        );
+    }
+    // The printed command, run as printed, reproduces the same report.
+    let replay = cli().args(&argv[1..]).output().unwrap();
+    assert_eq!(replay.status.code(), Some(0), "{replay:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&replay.stdout).unwrap(),
+        report
+    );
+    // Two committed companions in different attempts' leaves.
+    let mut leaves = Vec::new();
+    for attempt in std::fs::read_dir(p.output.join("paid")).unwrap() {
+        let trials = attempt.unwrap().path().join("trials");
+        if let Some(leaf) = std::fs::read_dir(trials)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|l| l.join("usage.json").exists())
+        {
+            leaves.push(leaf);
+        }
+    }
+    assert_eq!(leaves.len(), 6, "{leaves:?}");
+    let (a, b) = (&leaves[0], &leaves[1]);
+    let read = |leaf: &Path, name: &str| -> Value {
+        serde_json::from_slice(&std::fs::read(leaf.join(name)).unwrap()).unwrap()
+    };
+    let original = (
+        std::fs::read(b.join("usage.json")).unwrap(),
+        std::fs::read(b.join("metadata.json")).unwrap(),
+    );
+    // Leaf B's companion claims leaf A's driver attempt; its own binding,
+    // slot and profile stay intact and its marker re-binds the new bytes, so
+    // only the ledger-wide owner check can see it.
+    let mut usage = read(b, "usage.json");
+    usage["sessions"][0]["attempt_id"] = read(a, "usage.json")["sessions"][0]["attempt_id"].clone();
+    let forged = serde_json::to_vec(&usage).unwrap();
+    let mut meta = read(b, "metadata.json");
+    meta["usage"]["length"] = json!(forged.len());
+    meta["usage"]["sha256"] = json!(swarmail_evals::provenance::sha256(&forged));
+    std::fs::write(b.join("usage.json"), &forged).unwrap();
+    std::fs::write(b.join("metadata.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+    // Each leaf still verifies alone: only the shared owner set refuses.
+    artifacts::trial(a).unwrap();
+    artifacts::trial(b).unwrap();
+    std::fs::remove_file(p.output.join("report.json")).unwrap();
+    let n = std::fs::read(p.dir.path().join("driver-record.json")).unwrap();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("duplicate usage owner"), "{err}");
+    assert!(!p.output.join("report.json").exists());
+    std::fs::write(b.join("usage.json"), &original.0).unwrap();
+    std::fs::write(b.join("metadata.json"), &original.1).unwrap();
+    // The version-1 assignment chain (tasks.md, the panel's low on
+    // 9f28d4e8): leaf B's companion names leaf A's slot, every other field
+    // intact and the marker re-bound to the new bytes, so the companion is
+    // hash-valid and only its ownership of B's row is wrong.
+    let mut usage = read(b, "usage.json");
+    assert_ne!(usage["slot"], read(a, "usage.json")["slot"]);
+    usage["slot"] = read(a, "usage.json")["slot"].clone();
+    let forged = serde_json::to_vec(&usage).unwrap();
+    let mut meta = read(b, "metadata.json");
+    meta["usage"]["length"] = json!(forged.len());
+    meta["usage"]["sha256"] = json!(swarmail_evals::provenance::sha256(&forged));
+    std::fs::write(b.join("usage.json"), &forged).unwrap();
+    std::fs::write(b.join("metadata.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("usage_binding_mismatch"), "{err}");
+    assert!(!p.output.join("report.json").exists());
+    std::fs::write(b.join("usage.json"), &original.0).unwrap();
+    std::fs::write(b.join("metadata.json"), &original.1).unwrap();
+    // Each retained codex row records the class its selection named.
+    let rows = paid_rows(&p);
+    let codex: Vec<_> = rows
+        .iter()
+        .filter(|r| r["agent"].as_str().unwrap().starts_with("codex-"))
+        .collect();
+    assert_eq!(codex.len(), 10);
+    for row in &codex {
+        let declared = row["provenance"]["agent"]["tool_surface"].to_string();
+        assert!(
+            declared.contains("workspace-write sandbox (driver-selected)"),
+            "{declared}"
+        );
+        assert!(!declared.contains("\"read-only sandbox"), "{declared}");
+    }
+    // A codex selection whose sandbox class differs from the retained rows'
+    // refuses the resume at the first codex attempt, writing no report.
+    p.select(|v| v["families"]["codex"]["nested"]["codex_sandbox"] = json!("read-only"));
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("baseline_provenance_invalid"), "{err}");
+    assert!(!p.output.join("report.json").exists());
+    // The same selection with the retained class reopens: only the class
+    // differed.
+    p.select(|v| v["families"]["codex"]["nested"]["codex_sandbox"] = json!("workspace-write"));
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(1), "{err}");
+    std::fs::remove_file(p.output.join("report.json")).unwrap();
+    // The other side: the selection stays fixed and one retained codex row
+    // records the other admitted class, its digest repaired in the marker.
+    let leaf = leaves
+        .iter()
+        .find(|l| {
+            read(l, "result.json")["agent"]
+                .as_str()
+                .unwrap()
+                .starts_with("codex-")
+        })
+        .unwrap();
+    let kept = (
+        std::fs::read(leaf.join("result.json")).unwrap(),
+        std::fs::read(leaf.join("metadata.json")).unwrap(),
+    );
+    let text = String::from_utf8(kept.0.clone()).unwrap();
+    assert!(text.contains("workspace-write sandbox (driver-selected)"));
+    let swapped = text
+        .replace(
+            "workspace-write sandbox (driver-selected)",
+            "read-only sandbox (driver-selected)",
+        )
+        .into_bytes();
+    let mut meta = read(leaf, "metadata.json");
+    meta["result"]["length"] = json!(swapped.len());
+    meta["result"]["sha256"] = json!(swarmail_evals::provenance::sha256(&swapped));
+    std::fs::write(leaf.join("result.json"), &swapped).unwrap();
+    std::fs::write(
+        leaf.join("metadata.json"),
+        serde_json::to_vec(&meta).unwrap(),
+    )
+    .unwrap();
+    artifacts::trial(leaf).unwrap();
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("baseline_provenance_invalid"), "{err}");
+    assert!(!p.output.join("report.json").exists());
+    std::fs::write(leaf.join("result.json"), &kept.0).unwrap();
+    std::fs::write(leaf.join("metadata.json"), &kept.1).unwrap();
+    // Restored, the complete product reopens to its own bytes, having
+    // launched nothing in any of the refusals above.
+    p.select(|_| {});
+    let (code, _, err) = run(&mut p.authorized(&["--resume"]));
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(std::fs::read(p.output.join("report.json")).unwrap(), bytes);
+    assert_eq!(
+        std::fs::read(p.dir.path().join("driver-record.json")).unwrap(),
+        n
     );
 }

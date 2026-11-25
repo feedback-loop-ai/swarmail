@@ -65,7 +65,9 @@ fn dry_run_uses_the_exact_approved_product_without_reading_config_or_creating_ou
             "swarmail-evals",
             "report",
             "--input",
-            output.join("paid.jsonl")
+            output.join("paid.jsonl"),
+            "--usage-from",
+            output.join("paid")
         ])
     );
     assert!(
@@ -464,4 +466,77 @@ fn the_deliverability_tier_is_a_separate_baseline_product_with_the_same_discipli
         assert!(plan.is_null(), "{bad:?}: no plan on stdout");
         assert!(err.contains("arguments_invalid"), "{bad:?}: {err}");
     }
+}
+
+/// Route (b) as a product (proposed 0138): `baseline --via-brokkr DRIVER`
+/// takes each paid agent's amended via-brokkr profile and the flag, so the
+/// product id, which the operator authorizes, names the route and the path.
+#[test]
+fn a_nested_product_is_its_own_authorization() {
+    let direct = baseline::Plan::new(Path::new("/tmp/result"));
+    let driver = Path::new("/opt/brokkr-0.15.2/brokkr");
+    let nested = baseline::Plan::with_route(
+        None,
+        Path::new("/tmp/result"),
+        baseline::FRESHNESS_MINUTES,
+        Some(driver),
+    );
+    assert_ne!(nested.product_id, direct.product_id);
+    let elsewhere = baseline::Plan::with_route(
+        None,
+        Path::new("/tmp/result"),
+        baseline::FRESHNESS_MINUTES,
+        Some(Path::new("/other/brokkr")),
+    );
+    assert_ne!(elsewhere.product_id, nested.product_id);
+    assert_eq!(nested.agents.len(), direct.agents.len());
+    for (n, d) in nested.agents.iter().zip(&direct.agents) {
+        let (np, dp) = (n.wrapper_profile.unwrap(), d.wrapper_profile.unwrap());
+        assert!(np.via_brokkr() && np.approved() && np.direct() == dp);
+        assert_eq!(&n.argv[..d.argv.len()], &d.argv[..]);
+        assert_eq!(
+            &n.argv[d.argv.len()..],
+            ["--via-brokkr", "/opt/brokkr-0.15.2/brokkr"]
+        );
+    }
+    // The controls are untouched by the route.
+    assert_eq!(nested.control_agents, direct.control_agents);
+    assert_eq!(nested.chunks.len(), direct.chunks.len());
+    // Through the CLI: the dry run prints the nested product; a relative
+    // driver refuses.
+    let out = common::cli()
+        .args([
+            "baseline",
+            "--config",
+            "/private/selection.json",
+            "--output",
+            "/tmp/x",
+            "--dry-run",
+            "--via-brokkr",
+        ])
+        .arg(driver)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(plan["product_id"], nested.product_id);
+    let out = common::cli()
+        .args([
+            "baseline",
+            "--config",
+            "/private/selection.json",
+            "--output",
+            "/tmp/x",
+            "--dry-run",
+            "--via-brokkr",
+            "brokkr",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("baseline_driver_locator_invalid"));
 }

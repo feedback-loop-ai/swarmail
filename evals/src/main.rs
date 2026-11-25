@@ -86,6 +86,11 @@ enum Cmd {
         /// only outstanding slots run.
         #[arg(long)]
         resume: bool,
+        /// Run every paid agent through this pinned brokkr driver (route (b)):
+        /// the product's agents take their amended `*_via_brokkr` profiles and
+        /// the selection must pin the driver (evals/wrappers.md).
+        #[arg(long)]
+        via_brokkr: Option<PathBuf>,
         /// Minutes of validity a credential needs left before its chunk starts.
         #[arg(long, default_value_t = baseline::FRESHNESS_MINUTES, value_parser = clap::value_parser!(u64).range(1..=10080))]
         freshness_minutes: u64,
@@ -103,7 +108,7 @@ enum Cmd {
         model: String,
         #[arg(long)]
         config: PathBuf,
-        /// Launch through this brokkr driver (absolute path): `DRIVER claude -- <argv>`.
+        /// Launch through this pinned brokkr driver (absolute path), speaking forge-driver/v1 to it.
         #[arg(long)]
         via_brokkr: Option<PathBuf>,
         /// Set by a paid-baseline trial only: `SHA256:VALID_THROUGH`, the
@@ -111,6 +116,10 @@ enum Cmd {
         /// Descriptor 3 is then the launch report pipe.
         #[arg(long, hide = true)]
         paid_launch: Option<String>,
+        /// Set by a trial for a nested (`--via-brokkr`) agent: descriptor 3
+        /// is the launch report pipe that carries the session's usage.
+        #[arg(long, hide = true)]
+        launch_report: bool,
     },
     /// Launch Codex with private selected ChatGPT authentication.
     AgentCodex {
@@ -118,7 +127,7 @@ enum Cmd {
         model: String,
         #[arg(long)]
         config: PathBuf,
-        /// Launch through this brokkr driver (absolute path): `DRIVER codex -- <argv>`.
+        /// Launch through this pinned brokkr driver (absolute path), speaking forge-driver/v1 to it.
         #[arg(long)]
         via_brokkr: Option<PathBuf>,
         /// Set by a paid-baseline trial only: `SHA256:VALID_THROUGH`, the
@@ -126,6 +135,10 @@ enum Cmd {
         /// Descriptor 3 is then the launch report pipe.
         #[arg(long, hide = true)]
         paid_launch: Option<String>,
+        /// Set by a trial for a nested (`--via-brokkr`) agent: descriptor 3
+        /// is the launch report pipe that carries the session's usage.
+        #[arg(long, hide = true)]
+        launch_report: bool,
     },
     /// Launch dsh with the selected private route credential.
     AgentDsh {
@@ -133,7 +146,7 @@ enum Cmd {
         model: String,
         #[arg(long)]
         config: PathBuf,
-        /// Launch through this brokkr driver (absolute path): `DRIVER dsh -- <argv>`.
+        /// Launch through this pinned brokkr driver (absolute path), speaking forge-driver/v1 to it.
         #[arg(long)]
         via_brokkr: Option<PathBuf>,
         /// Set by a paid-baseline trial only: `SHA256:VALID_THROUGH`, the
@@ -141,6 +154,27 @@ enum Cmd {
         /// Descriptor 3 is then the launch report pipe.
         #[arg(long, hide = true)]
         paid_launch: Option<String>,
+        /// Set by a trial for a nested (`--via-brokkr`) agent: descriptor 3
+        /// is the launch report pipe that carries the session's usage.
+        #[arg(long, hide = true)]
+        launch_report: bool,
+    },
+    /// Print an interpreted CLI's paid pin (accepted 0137, 2026-11-23
+    /// amendment) for the selection's dsh family: its `executable`,
+    /// `cli_sha256` and `interpreted` members. Reads no credential.
+    PinInterpreted {
+        /// The native runtime (absolute path), never a shim.
+        #[arg(long)]
+        runtime: PathBuf,
+        /// The exact line `RUNTIME --version` answers, e.g. `v22.11.0`.
+        #[arg(long)]
+        runtime_version: String,
+        /// The installed package root (absolute path).
+        #[arg(long)]
+        package_root: PathBuf,
+        /// The entry file, relative to the package root.
+        #[arg(long)]
+        entry: String,
     },
     /// Serve one app-bound HTTP tool over MCP stdio using the EVAL inputs.
     FixtureHttp,
@@ -173,6 +207,23 @@ enum Cmd {
     },
     /// Run a built-in agent (`oracle` or `null`) from the EVAL_* environment.
     Agent { name: String },
+    /// Test equipment compiled into debug builds alone (part of #404): hand
+    /// the command after `--` one grant endpoint per `--endpoints` and
+    /// serve each once, as the paid coordinator does, for `--grant`, or
+    /// with one of `grant::serve_faulty`'s `--fault`s. A debug build spends
+    /// synthetic credentials alone.
+    #[cfg(debug_assertions)]
+    #[command(hide = true)]
+    GrantStandin {
+        #[arg(long)]
+        endpoints: usize,
+        #[arg(long)]
+        grant: String,
+        #[arg(long)]
+        fault: Option<String>,
+        #[arg(last = true)]
+        argv: Vec<OsString>,
+    },
     /// Run one trial and print exactly one JSON result line.
     /// Exit 0 pass, 1 fail, 2 harness error.
     Trial {
@@ -391,6 +442,12 @@ enum Cmd {
         /// this fresh path, tokens per success with its reason per group.
         #[arg(long)]
         page: Option<PathBuf>,
+        /// The retained artifact root holding the input's trial leaves: a
+        /// nested (`*_via_brokkr`) row's tokens come only from its committed
+        /// usage companion (proposed 0138). Required when the input holds a
+        /// scored nested row.
+        #[arg(long)]
+        usage_from: Option<PathBuf>,
     },
 }
 
@@ -455,6 +512,11 @@ fn trial_request(cmd: &Cmd) -> Result<TrialRequest, ExitCode> {
             || wrapper_profile.is_some())
     {
         return Err(fail("builtin_declaration_invalid"));
+    }
+    if let Some(category) = runner::reserved_flag(argv) {
+        // A runner switch is the runner's to append (part of #404).
+        eprintln!("swarmail-evals: harness error: {category}");
+        return Err(ExitCode::from(2));
     }
     if let Some(category) = runner::via_brokkr_refusal(argv, *wrapper_profile) {
         // Before any server starts or agent launches: a wrapper that
@@ -551,7 +613,7 @@ fn refuse(req: &TrialRequest, reason: &str, out: &mut impl Write, err: &mut impl
         artifacts_dir: None,
         ..req.clone()
     };
-    let row = runner::finalize(&bare, runner::refused_row(&bare, &id), None);
+    let row = runner::finalize(&bare, runner::refused_row(&bare, &id), None, None);
     let _ = writeln!(out, "{}", serde_json::to_string(&row).expect("serializes"));
     let _ = out.flush();
     row.exit_code() as u8
@@ -752,7 +814,57 @@ fn conclude(
     }
 }
 
+/// The debug-only grant stand-in: the coordinator's endpoint code, serving
+/// the command it launches (and that command's descendants).
+#[cfg(debug_assertions)]
+fn grant_standin(n: usize, want: &str, fault: Option<&str>, argv: &[OsString]) -> ExitCode {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::process::CommandExt as _;
+    #[cfg(not(target_os = "linux"))]
+    let _ = fault;
+    let Some((program, args)) = argv.split_first() else {
+        return fail("program_missing");
+    };
+    let ends = match swarmail_evals::grant::endpoints(n) {
+        Ok(ends) => ends,
+        Err(e) => return fail(e),
+    };
+    #[cfg(target_os = "linux")]
+    if fault == Some("prequeue") {
+        for (coordinator, _) in &ends {
+            swarmail_evals::grant::prequeue(coordinator, want);
+        }
+    }
+    let raws: Vec<_> = ends.iter().map(|(_, w)| w.as_raw_fd()).collect();
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    unsafe { cmd.pre_exec(move || swarmail_evals::grant::place(&raws)) };
+    let Ok(mut child) = cmd.spawn() else {
+        return fail("program_missing");
+    };
+    let me = std::process::id();
+    for (coordinator, worker) in ends {
+        drop(worker);
+        let want = want.to_string();
+        #[cfg(target_os = "linux")]
+        let fault = fault.map(str::to_string);
+        std::thread::spawn(move || {
+            #[cfg(target_os = "linux")]
+            if let Some(fault) = fault {
+                return swarmail_evals::grant::serve_faulty(coordinator, &want, &fault);
+            }
+            swarmail_evals::grant::serve(coordinator, me, &want);
+        });
+    }
+    match child.wait() {
+        Ok(status) => ExitCode::from(status.code().unwrap_or(2) as u8),
+        Err(_) => fail("wait"),
+    }
+}
+
 fn main() -> ExitCode {
+    // A paid grant endpoint stays this process's own (part of #404).
+    swarmail_evals::grant::seal_inherited();
     swarmail_evals::isolation::rearm_parent_death(std::process::id() == 1);
     std::panic::set_hook(Box::new(|_| {
         eprintln!("swarmail-evals: harness error: panicked");
@@ -812,6 +924,16 @@ fn main() -> ExitCode {
             Err(code) => return ExitCode::from(code),
         }
     }
+    #[cfg(debug_assertions)]
+    if let Cmd::GrantStandin {
+        endpoints,
+        grant,
+        fault,
+        argv,
+    } = &cli.command
+    {
+        return grant_standin(*endpoints, grant, fault.as_deref(), argv);
+    }
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -820,6 +942,8 @@ fn main() -> ExitCode {
         Err(_) => return fail("runtime unavailable"),
     };
     match cli.command {
+        #[cfg(debug_assertions)]
+        Cmd::GrantStandin { .. } => unreachable!("served above"),
         Cmd::ApiMcp { args } => {
             ExitCode::from(rt.block_on(swarmail_evals::apibench::api_mcp(&args)) as u8)
         }
@@ -839,8 +963,10 @@ fn main() -> ExitCode {
             freshness_minutes,
             renewal_poll_seconds,
             confirm_cleanup,
+            via_brokkr,
         } => rt.block_on(run_baseline(BaselineArgs {
             config,
+            via_brokkr,
             output,
             dry_run,
             tier,
@@ -855,37 +981,71 @@ fn main() -> ExitCode {
             config,
             via_brokkr,
             paid_launch,
+            launch_report,
         } => wrapper_result(
             "claude",
             model,
             config,
             via_brokkr.as_deref(),
             paid_launch.as_deref(),
+            launch_report,
         ),
         Cmd::AgentCodex {
             model,
             config,
             via_brokkr,
             paid_launch,
+            launch_report,
         } => wrapper_result(
             "codex",
             model,
             config,
             via_brokkr.as_deref(),
             paid_launch.as_deref(),
+            launch_report,
         ),
         Cmd::AgentDsh {
             model,
             config,
             via_brokkr,
             paid_launch,
+            launch_report,
         } => wrapper_result(
             "dsh",
             model,
             config,
             via_brokkr.as_deref(),
             paid_launch.as_deref(),
+            launch_report,
         ),
+        Cmd::PinInterpreted {
+            runtime,
+            runtime_version,
+            package_root,
+            entry,
+        } => match swarmail_evals::interpreted::pin(
+            &runtime,
+            &runtime_version,
+            &package_root,
+            &entry,
+        ) {
+            Ok(pin) => {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "executable": pin.entry_path(),
+                        "cli_sha256": pin.identity(),
+                        "interpreted": pin,
+                    })
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                // A finite category from the pin module, never a path.
+                eprintln!("swarmail-evals: pin refused: {e}");
+                ExitCode::from(2)
+            }
+        },
         Cmd::FixtureHttpIsolated => match wrappers::isolated_helper() {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => fail("helper_setup_failed"),
@@ -1258,6 +1418,7 @@ fn main() -> ExitCode {
             evidence_dir,
             tool_values_from,
             page,
+            usage_from,
         } => {
             if evidence_dir.is_some() && journal.is_none() {
                 eprintln!("swarmail-evals: harness error: evidence_requires_journal");
@@ -1301,7 +1462,29 @@ fn main() -> ExitCode {
                             return ExitCode::from(2);
                         }
                     };
-                    let report = report::report_with_journal(&rows, joined.as_ref());
+                    // A scored nested row is reported from its committed
+                    // companion or not at all (AC6): never journal tokens.
+                    let usage = match &usage_from {
+                        Some(root) => artifacts::companions(root, &rows),
+                        None if rows.iter().any(|r| {
+                            r.outcome != swarmail_evals::tasks::Outcome::HarnessError
+                                && swarmail_evals::usage::nested_profile(r).is_some()
+                        }) =>
+                        {
+                            Err("nested_usage_requires_artifacts".into())
+                        }
+                        None => Ok(Default::default()),
+                    };
+                    let usage = match usage {
+                        Ok(u) => u,
+                        Err(category) => {
+                            eprintln!(
+                                "swarmail-evals: harness error: usage_unverified: {category}"
+                            );
+                            return ExitCode::from(2);
+                        }
+                    };
+                    let report = report::report_with_usage(&rows, joined.as_ref(), &usage);
                     if let Some(path) = &page
                         && write_page(path, &report).is_err()
                     {
@@ -1458,6 +1641,20 @@ fn brokkr_mode_admissible(
         return Err("deadline_exceeds_seat");
     }
     Ok(())
+}
+
+/// A paid agent under `matrix --brokkr`: the realm's eval recipe must
+/// declare every F5 bind (bounded read, fixed refusals).
+fn brokkr_paid_admissible(realm_dir: &std::path::Path) -> Result<(), &'static str> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(realm_dir.join(".brokkr/recipes/eval/bundle.json"))
+        .and_then(|f| {
+            f.take(artifacts::SMALL_LIMIT as u64)
+                .read_to_string(&mut text)
+        })
+        .map_err(|_| "brokkr_realm_invalid")?;
+    swarmail_evals::binds::declared(&text)
 }
 
 /// Whether the artifact root resolves, without creating anything, to a path
@@ -1784,7 +1981,7 @@ impl MatrixEvidence {
         let result = (|| {
             match std::fs::symlink_metadata(&leaf) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    artifacts::retain_trial(&trials, row, None)?;
+                    artifacts::retain_trial(&trials, row, None, None)?;
                 }
                 Err(_) => return Err("artifact_unavailable".into()),
                 Ok(_) => {}
@@ -2476,6 +2673,22 @@ async fn run_child_assigned(
         Ok(args) => args,
         Err(failure) => return refused(failure),
     };
+    // A paid slot on the host (part of #404): one grant endpoint per
+    // expected agent, served by this coordinator alone. A recipe slot has
+    // no grant; its wrappers prove the seat's read-only binds instead.
+    let grants = match context.and_then(|c| c.paid.as_ref()) {
+        Some(paid) if brokkr.is_none() => {
+            let n = tasks::find(id).map_or(1, |t| t.agent_count as usize);
+            match swarmail_evals::grant::endpoints(n) {
+                Ok(ends) => Some((
+                    ends,
+                    swarmail_evals::grant::want(&paid.cli_sha256, paid.valid_through),
+                )),
+                Err(failure) => return refused(&failure),
+            }
+        }
+        _ => None,
+    };
     #[cfg(test)]
     let bypass_wait = std::env::var_os("EVAL_TEST_MATRIX_BYPASS_WAIT").is_some();
     #[cfg(not(test))]
@@ -2519,6 +2732,11 @@ async fn run_child_assigned(
         };
         cmd = Command::new(exe);
         dirs.apply(&mut cmd);
+        if let Some((ends, _)) = &grants {
+            use std::os::fd::AsRawFd as _;
+            let raws: Vec<_> = ends.iter().map(|(_, w)| w.as_raw_fd()).collect();
+            unsafe { cmd.pre_exec(move || swarmail_evals::grant::place(&raws)) };
+        }
         cmd.process_group(0)
             .arg("trial")
             .args(&args)
@@ -2545,6 +2763,13 @@ async fn run_child_assigned(
     #[cfg(test)]
     matrix_spawn_test_hold().await;
     let pid = child.id().expect("spawned trial has a PID");
+    if let Some((ends, want)) = grants {
+        for (coordinator, worker) in ends {
+            drop(worker);
+            let want = want.clone();
+            std::thread::spawn(move || swarmail_evals::grant::serve(coordinator, pid, &want));
+        }
+    }
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
     let brokkr_mode = slot.is_some();
@@ -3207,6 +3432,21 @@ async fn matrix_with_target(
         Ok(s) => s,
         Err(e) => return fail(e),
     };
+    // Fail closed (the operator's 2026-11-24 ruling on #404): a paid agent
+    // runs under the recipe only when its trial seat declares F5's
+    // read-only binds; the wrapper then proves their effect at launch.
+    // Every entry is decoded before dispatch, from the selection its
+    // wrapper would read (hold 1 on a73ac17a): a paid agent declared by
+    // argv alone, behind a free first slot, refuses here too.
+    if brokkr.is_some()
+        && specs.iter().any(|s| {
+            s.wrapper_profile.is_some() || swarmail_evals::wrappers::argv_selects_paid(&s.argv)
+        })
+        && let Err(category) = brokkr_paid_admissible(std::path::Path::new("."))
+    {
+        eprintln!("swarmail-evals: harness error: {category}");
+        return ExitCode::from(2);
+    }
     let mut resources = MatrixResources::default();
     if let Some(c) = &comparison {
         // The dsh wrapper takes no competitor: it has no MCP surface to name
@@ -3692,8 +3932,16 @@ fn wrapper_result(
     config: PathBuf,
     via_brokkr: Option<&std::path::Path>,
     paid_launch: Option<&str>,
+    launch_report: bool,
 ) -> ExitCode {
-    match wrappers::run(harness, &model, &config, via_brokkr, paid_launch) {
+    match wrappers::run(
+        harness,
+        &model,
+        &config,
+        via_brokkr,
+        paid_launch,
+        launch_report,
+    ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => {
             // run returns only finite harness-authored categories.
@@ -3753,6 +4001,7 @@ fn baseline_leaf(output: &std::path::Path) -> Result<PathBuf, String> {
 }
 struct BaselineArgs {
     config: PathBuf,
+    via_brokkr: Option<PathBuf>,
     output: PathBuf,
     dry_run: bool,
     tier: Option<tasks::Tier>,
@@ -3764,7 +4013,16 @@ struct BaselineArgs {
 }
 
 async fn run_baseline(args: BaselineArgs) -> ExitCode {
-    let plan = baseline::Plan::with_margin(args.tier, &args.output, args.freshness_minutes);
+    let plan = baseline::Plan::with_route(
+        args.tier,
+        &args.output,
+        args.freshness_minutes,
+        args.via_brokkr.as_deref(),
+    );
+    if args.via_brokkr.as_ref().is_some_and(|d| !d.is_absolute()) {
+        eprintln!("swarmail-evals: baseline refused: baseline_driver_locator_invalid");
+        return ExitCode::from(2);
+    }
     if !args.config.is_absolute() {
         return fail("baseline_config_locator_invalid");
     }
@@ -4139,7 +4397,18 @@ impl Ledger<'_> {
                 );
                 continue;
             }
-            let retained = artifacts::trial(&leaf).map_err(|_| invalid())?;
+            // The leaf's own reason travels with the refusal, so a resume
+            // names what failed (a companion owning another slot, a broken
+            // digest) rather than only which trial.
+            let retained = artifacts::trial(&leaf).map_err(|e| format!("{}: {e}", invalid()))?;
+            // One owner set across every committed leaf of the whole paid
+            // ledger, unscored ones included (part of #404): a companion
+            // copied into a second leaf never lets two slots own one driver
+            // attempt.
+            ledger
+                .owners
+                .claim(retained.usage.as_ref())
+                .map_err(|e| format!("attempt {id}: {e}"))?;
             if retained.row.outcome == Outcome::HarnessError {
                 // Evidence of an unscored attempt: kept and counted by the
                 // report, but it consumes no slot.
@@ -4171,6 +4440,7 @@ impl Ledger<'_> {
 struct Evidence {
     scored: std::collections::BTreeMap<SlotKey, TrialResult>,
     unscored: Vec<TrialResult>,
+    owners: artifacts::UsageOwners,
 }
 fn publish_closure(dir: &std::path::Path, id: &str, cause: &str) -> Result<(), String> {
     artifacts::publish(
@@ -4221,8 +4491,10 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
     let validity = |key: &str| {
         wrappers::valid_until(config, key).map_err(|e| format!("credential {key}: {e}"))
     };
-    let live_contracts =
-        || wrappers::paid_contracts(config, &families).map_err(|e| format!("contract {e}"));
+    let live_contracts = || {
+        wrappers::paid_contracts(config, &families, args.via_brokkr.is_some())
+            .map_err(|e| format!("contract {e}"))
+    };
     // A fresh run checks every planned family's local contract and
     // credential shape before anything spends or any output exists. A resume
     // binds the contracts its manifest recorded and rechecks them live only
@@ -4465,10 +4737,18 @@ async fn baseline_execute(args: &BaselineArgs, plan: &baseline::Plan) -> Result<
     // (0055 §10, 0076 §5): unscored attempts join the scored slots there,
     // where they raise attempts and harness_errors and never a success rate.
     let attempted: Vec<TrialResult> = rows.iter().chain(&evidence.unscored).cloned().collect();
+    // A nested row's usage is read from its committed companion by the
+    // same verified reader `report --usage-from` uses (part of #404), so
+    // the product's report and the printed command agree.
+    let usage = artifacts::companions(&root.join("paid"), &attempted)
+        .map_err(|e| format!("usage_unverified: {e}"))?;
     publish_or_verify(
         &root,
         "report.json",
-        &artifacts::encode(&report::report(&attempted), artifacts::PLAN_LIMIT)?,
+        &artifacts::encode(
+            &report::report_with_usage(&attempted, None, &usage),
+            artifacts::PLAN_LIMIT,
+        )?,
     )?;
     Ok(baseline::status(
         0,
@@ -7269,6 +7549,11 @@ mod brokkr_mode_tests {
             Err("brokkr_requires_artifacts")
         );
         assert_eq!(check(&me, crate_dir, None), Err("brokkr_realm_invalid"));
+        assert_eq!(brokkr_paid_admissible(root), Ok(()));
+        assert_eq!(
+            brokkr_paid_admissible(crate_dir),
+            Err("brokkr_realm_invalid")
+        );
         assert_eq!(check(&me, root, None), Ok(()));
         assert_eq!(
             check("brokkr".as_ref(), root, None),

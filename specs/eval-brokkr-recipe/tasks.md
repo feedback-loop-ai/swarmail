@@ -345,9 +345,62 @@ tasks in `specs/trial-evidence/`. Part of #391, not its close.
 - [x] **T45 Typed accounting on the page.** `report --page` gives every paid
   group a figure or `null` with its reason, journal or not.
 - [x] **T46 Proposed 0136** for the token source and the reference run.
-- [ ] **T47 Operator: the first authenticated via-brokkr smoke per family**
-  (`evals/README.md`, "The first authenticated via-brokkr smoke, per family"),
-  recorded by dated addenda in 0119 §5 (F2) and §6 (F1) and in the F1/F2/F5
-  table of `implementation.md` (T31). Operator-owned; not run by a seat.
+- [x] **T47 Operator: the first authenticated via-brokkr smoke per family**
+  — run 2026-11-23 and recorded in 0119's 2026-11-23 addendum: the outer
+  `exec` adapter drops a nested driver's stdout (brokkr#1289), and the
+  operator ruled route (b).
 - [ ] **T48 Operator: rule on 0136.** The direct-launch usage reader stays
   unbuilt until accepted (0045 §8).
+
+## #404: count paid tokens through the nested driver (route (b))
+
+Spec, plan and tasks in `specs/nested-driver-usage/`; proposed 0138. Part of
+#404, #391 and #164.
+
+- [x] **T49 Amended CLI profiles** (accepted 0137's 2026-11-23 amendment):
+  claude 2.1.329 and codex 0.166.0 native, dsh 0.2.2-rc.1 interpreted under a
+  runtime-and-package pin; the superseded profiles leave the approved set.
+- [x] **T50 The forge-driver/v1 caller** (`evals/src/driver.rs`), wired into
+  `wrappers::launch` against brokkr v0.15.2's guide; `driver_contract_unknown`
+  lifted for the three amended `*_via_brokkr` profiles only.
+- [x] **T51 The release pin** (v0.15.2 Linux x86_64 executable by path and
+  SHA-256, traced to its archive's `SHA256SUMS` line), apart from the engine's;
+  a release build admits the release executable's digest alone, checked on
+  every nested route (host grant and recipe), and no environment value widens
+  it. Debug builds also admit the stand-in built beside them and spend only
+  synthetic credentials, judged by each family's authorizing field alone
+  (`paid_seam_build_refused`); unit-tested. Executed offline for the
+  stand-in; the release binary itself only in the opt-in `real_driver.rs`.
+  The release profile's refusal of the stand-in is the host-gated
+  `release_seam.rs::release_standin_is_not_admitted` (`cargo test --release
+  --locked --test wrappers -- --ignored release_standin_is_not_admitted`
+  from `evals/`). It passed at 37a44cb9's tree; the dispatcher re-runs it on
+  the final head.
+- [x] **T52 Typed nested usage** (`evals/src/usage.rs`): one session per
+  expected agent in the trial leaf's usage companion `usage.json`, bound in
+  `metadata.json` (proposed 0138); the schema-2 row is unchanged; `report
+  --usage-from` takes tokens per success from the companions alone (0136).
+  Executed offline, including a three-agent `inbox-isolation` trial; no
+  authenticated session yet (T55).
+- [x] **T53 F5 projections, environment and binds** per family. What is
+  proven: projections with a protocol stand-in; the real v0.15.2 driver
+  launching inert CLIs on the **host route** (opt-in `real_driver.rs`, run by
+  the dispatcher on 2026-11-24 at a73ac17a); and the **mount primitive**, a
+  read-only bubblewrap bind rejecting a write with `binds::verify` passing in
+  its namespace (host-gated `mount_proof.rs`, same day). The recipe's
+  thirteen read-only binds and the dsh overlay are declared in
+  `.brokkr/recipes/eval/bundle.json`, and a paid recipe wrapper verifies all
+  of them, HOME-resolved, plus the selected paths, from its own mount table
+  (unit-tested over fixture tables; `mount_proof.rs` extends to the whole
+  inventory and the overlay, pending the dispatcher's run at the third
+  rework). What is **not yet** proven: brokkr applying
+  the bundle's binds to a recipe seat, and the release driver launching
+  inside one; and any paid claude or codex session under read-only auth,
+  which the wrapper refuses (`recipe_auth_unruled`) pending an operator
+  ruling. Codex's inner class is `read-only` or `workspace-write`, recorded
+  per row in the descriptor, and `danger-full-access` is refused.
+- [x] **T54 `journal-facts.sh`** on the real `export --run` NDJSON shape.
+- [ ] **T55 Operator: one authenticated finished-path session per family**
+  (`evals/README.md`, "The authenticated finished-path session, per family"),
+  each recording non-null input and output tokens; this also proves the
+  proposed codex class (`workspace-write`) writes its result. Operator-owned; not run by a seat.

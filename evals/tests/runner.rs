@@ -2302,3 +2302,40 @@ fn sequential_admission_refuses_independent_cli_trials() {
         assert_eq!(row.outcome, Outcome::Pass, "{}", stderr(&out));
     }
 }
+
+/// A runner switch is the runner's to append (part of #404): `trial`'s argv
+/// after `--` and a request handed to `validate_request` refuse a caller's
+/// `--paid-launch` or `--launch-report`, in either spelling, before any
+/// server or agent starts.
+#[test]
+fn caller_argv_never_carries_a_runner_switch() {
+    for word in [
+        "--paid-launch",
+        "--paid-launch=0000:0",
+        "--launch-report",
+        "--launch-report=",
+    ] {
+        let out = cli()
+            .args(["trial", "--task", "signup", "--agent", "x", "--"])
+            .args(["/bin/true", "--model", word, "0000:0"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{word}");
+        assert!(out.stdout.is_empty(), "{word}");
+        assert!(
+            stderr(&out).contains("agent_argv_reserved_flag"),
+            "{word}: {}",
+            stderr(&out)
+        );
+        let req = runner::TrialRequest {
+            task: Some("signup".into()),
+            agent: Some("x".into()),
+            argv: vec!["/bin/true".into(), word.into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            runner::validate_request(&req).unwrap_err(),
+            "agent_argv_reserved_flag"
+        );
+    }
+}

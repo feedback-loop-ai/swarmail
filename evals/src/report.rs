@@ -74,6 +74,9 @@ pub fn parse_agents(text: &str) -> Result<Vec<AgentSpec>, String> {
         if !builtin && a.argv.is_empty() {
             return Err(format!("external agent {} needs a nonempty argv", a.label));
         }
+        if let Some(refusal) = crate::runner::reserved_flag(&a.argv) {
+            return Err(format!("agent {}: {refusal}", a.label));
+        }
     }
     Ok(agents)
 }
@@ -239,6 +242,16 @@ pub fn report_with_journal(
     rows: &[TrialResult],
     journal: Option<&crate::journal::Joined>,
 ) -> Value {
+    report_with_usage(rows, journal, &crate::usage::Companions::new())
+}
+
+/// The same report, with each nested group's `nested_usage` read from the
+/// committed usage companions (proposed 0138) and never from the journal.
+pub fn report_with_usage(
+    rows: &[TrialResult],
+    journal: Option<&crate::journal::Joined>,
+    usage: &crate::usage::Companions,
+) -> Value {
     let mut groups: BTreeMap<(Option<String>, Option<String>), Vec<&TrialResult>> = BTreeMap::new();
     for row in rows {
         groups
@@ -300,6 +313,11 @@ pub fn report_with_journal(
             if let Some(joined) = journal {
                 group["journal"] = crate::journal::summarize(&rows, joined);
             }
+            // Route (b)'s harness-authored usage: the only token source for
+            // a nested group, whatever the journal holds.
+            if let Some(nested) = crate::usage::summarize(&rows, usage) {
+                group["nested_usage"] = nested;
+            }
             group
         })
         .collect();
@@ -357,5 +375,27 @@ mod tests {
         ] {
             assert!(parse_agents(bad).is_err(), "{bad}");
         }
+        // A runner switch in an agents file is refused before any slot, in
+        // either spelling and wherever it stands after the program.
+        for word in [
+            "--paid-launch",
+            "--paid-launch=x:0",
+            "--launch-report",
+            "--launch-report=1",
+        ] {
+            let text = format!(r#"[{{"label":"x","argv":["/bin/x","--a",{word:?}]}}]"#);
+            assert_eq!(
+                parse_agents(&text).err().as_deref(),
+                Some("agent x: agent_argv_reserved_flag"),
+                "{word}"
+            );
+        }
+        // The program itself and look-alike words are not switches.
+        assert!(
+            parse_agents(
+                r#"[{"label":"x","argv":["--paid-launch","--paid-launcher","--launch-reports"]}]"#
+            )
+            .is_ok()
+        );
     }
 }

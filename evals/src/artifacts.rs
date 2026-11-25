@@ -40,6 +40,11 @@ pub struct Metadata {
     pub result: Binding,
     pub state: StateBinding,
     pub diagnostics: Binding,
+    /// A nested trial's usage companion (proposed 0138), committed in this
+    /// same marker. Absent on every other leaf, so historical metadata keeps
+    /// its exact bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Binding>,
 }
 pub fn generated_id(s: &str) -> bool {
     s.len() == 32
@@ -287,13 +292,23 @@ pub fn publish(root: &Path, name: &str, bytes: &[u8]) -> Result<Binding, String>
         sha256: sha256(bytes),
     })
 }
-pub fn retain_trial(root: &Path, row: &TrialResult, snap: Option<&Snapshot>) -> Result<(), String> {
-    retain_with(root, row, snap, publish)
+pub fn retain_trial(
+    root: &Path,
+    row: &TrialResult,
+    snap: Option<&Snapshot>,
+    usage: Option<&crate::usage::Companion>,
+) -> Result<(), String> {
+    retain_with(root, row, snap, usage, publish)
+}
+/// Whether a row needs a companion: a scored row of a nested profile.
+fn needs_usage(row: &TrialResult) -> bool {
+    row.outcome != Outcome::HarnessError && crate::usage::nested_profile(row).is_some()
 }
 fn retain_with(
     root: &Path,
     row: &TrialResult,
     snap: Option<&Snapshot>,
+    usage: Option<&crate::usage::Companion>,
     mut publish: impl FnMut(&Path, &str, &[u8]) -> Result<Binding, String>,
 ) -> Result<(), String> {
     if !generated_id(&row.trial_id) {
@@ -321,6 +336,11 @@ fn retain_with(
     } else if row.outcome != Outcome::HarnessError {
         return Err("business result requires state".into());
     }
+    match usage {
+        Some(u) => u.validate(row)?,
+        None if needs_usage(row) => return Err("usage companion missing".into()),
+        None => {}
+    }
     let result = publish(&out, "result.json", &encode(row, SMALL_LIMIT - 1)?)?;
     let state = match snap {
         Some(s) => StateBinding::Present {
@@ -340,12 +360,23 @@ fn retain_with(
             b"trial_finished\n"
         },
     )?;
+    // The companion is published after cleanup, before the one marker that
+    // commits the leaf: a crash before the marker leaves no committed score.
+    let usage = match usage {
+        Some(u) => Some(publish(
+            &out,
+            crate::usage::COMPANION_FILE,
+            &encode(u, SMALL_LIMIT)?,
+        )?),
+        None => None,
+    };
     let meta = Metadata {
         schema_version: 1,
         trial_id: row.trial_id.clone(),
         result,
         state,
         diagnostics,
+        usage,
     };
     publish(&out, "metadata.json", &encode(&meta, SMALL_LIMIT)?)?;
     Ok(())
@@ -433,6 +464,8 @@ pub struct MatrixIndex {
 pub struct ValidatedTrial {
     pub row: TrialResult,
     pub state: Option<Snapshot>,
+    /// A nested trial's committed usage companion.
+    pub usage: Option<crate::usage::Companion>,
 }
 pub fn trial(root: &Path) -> Result<ValidatedTrial, String> {
     let meta: Metadata = decode(&read_file(root, "metadata.json", SMALL_LIMIT)?)
@@ -486,7 +519,26 @@ pub fn trial(root: &Path) -> Result<ValidatedTrial, String> {
         }
     };
     bound(root, &meta.diagnostics, "diagnostics.log", SMALL_LIMIT)?;
-    Ok(ValidatedTrial { row, state })
+    let usage = match &meta.usage {
+        Some(b) => {
+            let u: crate::usage::Companion =
+                decode(&bound(root, b, crate::usage::COMPANION_FILE, SMALL_LIMIT)?)
+                    .map_err(|_| "invalid usage companion")?;
+            u.validate(&row)?;
+            Some(u)
+        }
+        None => {
+            // An unbound companion is an orphan; a scored nested row needs one.
+            if std::fs::symlink_metadata(root.join(crate::usage::COMPANION_FILE)).is_ok() {
+                return Err("orphan usage companion".into());
+            }
+            if needs_usage(&row) {
+                return Err("usage companion missing".into());
+            }
+            None
+        }
+    };
+    Ok(ValidatedTrial { row, state, usage })
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -624,6 +676,7 @@ pub fn matrix(root: &Path) -> Result<Vec<ReplayRow>, String> {
     let trials = root.join("trials");
     safe_root(&trials)?;
     let mut out = Vec::new();
+    let mut owners = UsageOwners::default();
     for (c, b) in plan.cells.iter().zip(&index.metadata) {
         if b.path != format!("trials/{}/metadata.json", c.trial_id) {
             return Err("invalid metadata path".into());
@@ -634,7 +687,79 @@ pub fn matrix(root: &Path) -> Result<Vec<ReplayRow>, String> {
         bound(&trial_root, &relative, "metadata.json", SMALL_LIMIT)?;
         let v = trial(&trial_root)?;
         matches_cell(&v.row, c)?;
+        owners.claim(v.usage.as_ref())?;
         out.push(v.replay());
+    }
+    Ok(out)
+}
+/// The driver attempts the committed companions of one read own: a session
+/// attempt claimed by two leaves is a duplicate owner, refused.
+#[derive(Default)]
+pub struct UsageOwners(std::collections::BTreeSet<String>);
+impl UsageOwners {
+    pub fn claim(&mut self, usage: Option<&crate::usage::Companion>) -> Result<(), String> {
+        for attempt in usage.into_iter().flat_map(|u| u.attempts()) {
+            if !self.0.insert(attempt.to_string()) {
+                return Err("duplicate usage owner".into());
+            }
+        }
+        Ok(())
+    }
+}
+/// The committed usage companions of a report's nested rows, read from the
+/// retained leaves under `root` (a trial, matrix or baseline artifact root,
+/// searched to a fixed depth without following links). Every scored nested
+/// row must resolve to exactly one committed leaf whose row is the supplied
+/// one and whose companion validates; a missing, mismatched or
+/// duplicate-owner companion refuses the report, never a journal fill.
+pub fn companions(root: &Path, rows: &[TrialResult]) -> Result<crate::usage::Companions, String> {
+    let wanted: std::collections::BTreeSet<&str> = rows
+        .iter()
+        .filter(|r| crate::usage::nested_profile(r).is_some())
+        .map(|r| r.trial_id.as_str())
+        .collect();
+    let mut leaves = std::collections::BTreeMap::new();
+    let mut stack = vec![(resolve_root(root)?, 0usize)];
+    let mut visited = 0usize;
+    while let Some((dir, depth)) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).map_err(|_| "usage root unreadable")? {
+            visited += 1;
+            if visited > 1_000_000 {
+                return Err("usage root too large".into());
+            }
+            let entry = entry.map_err(|_| "usage root unreadable")?;
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let name = entry.file_name();
+            match name.to_str() {
+                Some(id) if wanted.contains(id) => {
+                    if leaves.insert(id.to_string(), entry.path()).is_some() {
+                        return Err("duplicate usage owner".into());
+                    }
+                }
+                _ if depth < 4 => stack.push((entry.path(), depth + 1)),
+                _ => {}
+            }
+        }
+    }
+    let mut owners = UsageOwners::default();
+    let mut out = crate::usage::Companions::new();
+    for row in rows {
+        let Some(leaf) = leaves.get(&row.trial_id) else {
+            if needs_usage(row) {
+                return Err("usage companion missing".into());
+            }
+            continue;
+        };
+        let v = trial(leaf)?;
+        if v.row != *row {
+            return Err("usage row mismatch".into());
+        }
+        owners.claim(v.usage.as_ref())?;
+        if let Some(u) = v.usage {
+            out.insert(row.trial_id.clone(), u);
+        }
     }
     Ok(out)
 }
@@ -701,7 +826,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let root = artifact_root(&dir);
             let mut injected = false;
-            let r = retain_with(&root, &row, Some(&snap), |root, name, bytes| {
+            let r = retain_with(&root, &row, Some(&snap), None, |root, name, bytes| {
                 if name == stage {
                     injected = true;
                     return Err("injected write failure".into());
@@ -713,6 +838,51 @@ mod tests {
             assert_eq!(r.unwrap_err(), "injected write failure");
             assert!(!root.join(&row.trial_id).join("metadata.json").exists());
         }
+        // A nested leaf adds the usage companion, published after cleanup
+        // and before the marker: a failure at it, or at the marker after
+        // it, leaves no committed leaf.
+        let nested = crate::runner::TrialRequest {
+            task: Some("signup".into()),
+            agent: Some("claude-nested".into()),
+            argv: vec!["/bin/agent".into()],
+            agent_model: Some("claude-sonnet-5-5".into()),
+            wrapper_profile: Some(crate::provenance::WrapperProfile::Claude2_1_329ViaBrokkr),
+            ..Default::default()
+        };
+        let row = crate::runner::refused_row(&nested, &"1".repeat(32));
+        let usage = crate::usage::Companion::new(
+            &row,
+            vec![crate::usage::Session {
+                agent: 0,
+                attempt_id: "attempt-1".into(),
+                disposition: "completed".into(),
+                facts: crate::usage::Facts::unavailable(crate::usage::Reason::NoSessionFinal),
+            }],
+        )
+        .expect("a nested row has a companion");
+        for stage in [crate::usage::COMPANION_FILE, "metadata.json"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = artifact_root(&dir);
+            let mut seen = Vec::new();
+            let r = retain_with(&root, &row, None, Some(&usage), |root, name, bytes| {
+                seen.push(name.to_string());
+                if name == stage {
+                    return Err("injected write failure".into());
+                }
+                publish(root, name, bytes)
+            });
+            assert_eq!(r.unwrap_err(), "injected write failure");
+            assert!(
+                seen.iter().any(|n| n == crate::usage::COMPANION_FILE),
+                "{seen:?}"
+            );
+            assert!(!root.join(&row.trial_id).join("metadata.json").exists());
+            assert!(trial(&root.join(&row.trial_id)).is_err());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = artifact_root(&dir);
+        retain_trial(&root, &row, None, Some(&usage)).unwrap();
+        assert_eq!(trial(&root.join(&row.trial_id)).unwrap().usage, Some(usage));
     }
     #[test]
     fn exclusive_destinations_and_symlinked_roots_are_never_reused() {
@@ -724,9 +894,9 @@ mod tests {
             ..Default::default()
         };
         let row = crate::runner::refused_row(&req, &"0".repeat(32));
-        retain_trial(&dir, &row, None).unwrap();
+        retain_trial(&dir, &row, None, None).unwrap();
         let before = read_file(&dir.join(&row.trial_id), "metadata.json", SMALL_LIMIT).unwrap();
-        assert!(retain_trial(&dir, &row, None).is_err());
+        assert!(retain_trial(&dir, &row, None, None).is_err());
         assert_eq!(
             read_file(&dir.join(&row.trial_id), "metadata.json", SMALL_LIMIT).unwrap(),
             before
@@ -1022,7 +1192,7 @@ mod tests {
         };
         let id = "1".repeat(32);
         let row = crate::runner::refused_row(&req, &id);
-        let result = retain_trial(&real, &row, None);
+        let result = retain_trial(&real, &row, None, None);
         let seen = real.join(&id).join("metadata.json");
         let through = named.join(&id).join("metadata.json");
         let same = std::fs::metadata(&seen).and_then(|a| {

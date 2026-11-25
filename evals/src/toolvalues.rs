@@ -2042,6 +2042,18 @@ pub fn tokens_figure(group: &Value) -> (Option<f64>, &'static str) {
     if builtin {
         return (None, "builtin_agent");
     }
+    // A nested group's figure comes from its harness-authored usage alone:
+    // a journal never fills a nested gap.
+    if let Some(nested) = group.get("nested_usage") {
+        let figure = &nested["tokens_per_success"];
+        return match (figure["value"].as_f64(), figure["reason"].as_str()) {
+            (Some(v), _) => (Some(v), ""),
+            (None, Some("no_passes")) => (None, "no_passes"),
+            (None, Some("sum_overflow")) => (None, "sum_overflow"),
+            (None, Some("missing_required_count")) => (None, "missing_required_count"),
+            _ => (None, "incomplete_attribution"),
+        };
+    }
     if let Some(journal) = group.get("journal") {
         let reason = match journal["tokens_per_success_reason"].as_str() {
             Some("no_passes") => "no_passes",
@@ -2063,7 +2075,7 @@ pub fn tokens_figure(group: &Value) -> (Option<f64>, &'static str) {
 /// The private Markdown page rendered from the report's group objects.
 pub fn render_page(report: &Value) -> String {
     let mut out = String::from(
-        "# Eval report\n\nTokens per success is the scored attempts' input plus output tokens over their passes (decision 0119 §3); cached tokens are reported beside it, never added. A figure that cannot be computed is `null` with its reason, never a dash or a zero; the cached count is shown whenever the journal holds it whole, and is otherwise `null` with the figure's reason.\n\n| task | agent | attempts | passes | fails | harness errors | tokens per success | cached tokens |\n|---|---|---|---|---|---|---|---|\n",
+        "# Eval report\n\nTokens per success is the scored attempts' input plus output tokens over their passes (decision 0119 §3; accepted 0136); cached tokens are reported beside it, never added. A group run through the nested brokkr driver takes its tokens from the harness-authored session usage alone (`via_brokkr_driver`), and its cached cell shows cache reads and writes separately. A figure that cannot be computed is `null` with its reason, never a dash or a zero; the cached count is shown whenever the journal holds it whole, and is otherwise `null` with the figure's reason.\n\n| task | agent | attempts | passes | fails | harness errors | tokens per success | cached tokens |\n|---|---|---|---|---|---|---|---|\n",
     );
     for g in report["groups"].as_array().into_iter().flatten() {
         let text = |v: &Value| escape_cell(v.as_str().unwrap_or("(none)"));
@@ -2075,11 +2087,23 @@ pub fn render_page(report: &Value) -> String {
         // added to the total that overflowed). Under `incomplete_join` it
         // would be a partial sum, so it is `null` with that reason; with
         // no sum it is `null` with the figure's own reason.
-        let cached = match g["journal"]["tokens"]["cached"]["sum"].as_u64() {
-            Some(_) if reason == "incomplete_join" => null(reason),
-            Some(n) => n.to_string(),
-            None if value.is_some() => null("incomplete_join"),
-            None => null(reason),
+        let cached = if let Some(nested) = g.get("nested_usage") {
+            let part = |k: &str| match &nested[k] {
+                v if v["status"] == "present" => v["value"].to_string(),
+                v => null(v["reason"].as_str().unwrap_or("incomplete_attribution")),
+            };
+            format!(
+                "reads {}, writes {}",
+                part("cache_read_tokens"),
+                part("cache_write_tokens")
+            )
+        } else {
+            match g["journal"]["tokens"]["cached"]["sum"].as_u64() {
+                Some(_) if reason == "incomplete_join" => null(reason),
+                Some(n) => n.to_string(),
+                None if value.is_some() => null("incomplete_join"),
+                None => null(reason),
+            }
         };
         out.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} | {} | {} |\n",

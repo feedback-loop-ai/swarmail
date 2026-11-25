@@ -1996,6 +1996,103 @@ fn brokkr_mode_refuses_without_artifacts_realm_or_a_nesting_deadline() {
         "concurrency_unsupported",
     );
     assert!(!root.exists(), "a refusal writes no evidence");
+    // A paid agent under a recipe whose trial seat lacks F5's read-only
+    // binds fails closed before any slot (the operator's 2026-11-24 ruling
+    // on #404); the realm's own bundle declares them, so the same agent
+    // passes this check and goes on to the other refusals.
+    std::fs::create_dir(dir.path().join("paid")).unwrap();
+    let paid = agents_file(
+        &dir.path().join("paid"),
+        // An available program, so the bound control below reaches dispatch;
+        // the no-row stand-in never runs it.
+        json!([{"label": "claude-nested", "argv": [common::TRUE_PROGRAM], "model": "claude-sonnet-5-5", "wrapper_profile": "claude_2_1_329_via_brokkr"}]),
+    );
+    let unbound = dir.path().join("unbound");
+    let recipe = unbound.join(".brokkr/recipes/eval");
+    std::fs::create_dir_all(&recipe).unwrap();
+    let mut bundle: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(realm.join(".brokkr/recipes/eval/bundle.json")).unwrap(),
+    )
+    .unwrap();
+    bundle["seats"]["trial"]["hands"]["binds"] = json!([]);
+    std::fs::write(recipe.join("bundle.json"), bundle.to_string()).unwrap();
+    // Each preflight probe runs the no-row stand-in, which logs its dispatch
+    // and exits before the recipe's trial.sh: none of them can take the
+    // shared trial lock outside `trial_scope` (the macOS failure on
+    // 8359e879, where the bound probe ran a real oracle trial beside
+    // `agreeing_case`). Each probe has its own request log.
+    let probe = |agents: &str, realm: &std::path::Path, name: &str| {
+        let log = dir.path().join(format!("{name}.log"));
+        let mut cmd = brokkr_matrix("no-row", realm);
+        cmd.env("EVAL_TEST_BROKKR_LOG", &log)
+            .args(["--tasks", "signup", "--agents", agents, "--trials", "1"])
+            .args(["--artifacts-dir", realm.join("artifacts").to_str().unwrap()]);
+        let out = cmd.output().unwrap();
+        let sent = std::fs::read_to_string(&log).map_or(0, |t| requests(&t));
+        (out, sent)
+    };
+    let (out, sent) = probe(&paid, &unbound, "profile-unbound");
+    refused(out, "brokkr_paid_unbound");
+    assert_eq!(sent, 0, "an unbound profile dispatches nothing");
+    assert!(!unbound.join("artifacts").exists());
+    // Hold 1 on a73ac17a: the selection decides, not the profile. A paid
+    // version-2 wrapper declared by argv alone, behind a free first slot,
+    // refuses before any slot dispatches.
+    use std::os::unix::fs::PermissionsExt as _;
+    let selection = dir.path().join("paid").join("selection.json");
+    std::fs::write(
+        &selection,
+        // A valid paid selection (panel low 6 on 6074b83e): detection, not
+        // an unreadable file's fail-closed refusal.
+        json!({"version": 2, "families": {"claude": {
+            "executable": "/bin/true",
+            "credential_file": "/nonexistent",
+            "profile": "claude_2_1_329",
+            "cli_version": swarmail_evals::provenance::WrapperProfile::Claude2_1_329.cli_version(),
+            "cli_sha256": "0".repeat(64),
+            "auth_shape": swarmail_evals::wrappers::auth_shape("claude"),
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::set_permissions(&selection, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // Its own file: written over `paid`, it made the bound probe below run
+    // this declaration's free oracle slot instead of the profile.
+    std::fs::create_dir(dir.path().join("argv-only")).unwrap();
+    let argv_only = agents_file(
+        &dir.path().join("argv-only"),
+        json!([
+            {"label": "oracle", "argv": []},
+            {"label": "claude-direct", "argv": [common::exe(), "agent-claude", "--model", "claude-sonnet-5-5", format!("--config={}", selection.display())]},
+        ]),
+    );
+    assert_ne!(argv_only, paid);
+    let (out, sent) = probe(&argv_only, &unbound, "argv-unbound");
+    refused(out, "brokkr_paid_unbound");
+    assert_eq!(sent, 0, "an argv-only paid slot dispatches nothing");
+    assert!(!unbound.join("artifacts").exists());
+    // The profile declaration is still the one `paid` names.
+    let declared: Value = serde_json::from_slice(&std::fs::read(&paid).unwrap()).unwrap();
+    assert_eq!(declared[0]["label"], "claude-nested");
+    // The bound control: the same declaration passes the preflight and is
+    // dispatched exactly once; the no-row stand-in then leaves no row.
+    let (bound, sent) = probe(&paid, &realm, "profile-bound");
+    assert!(
+        !stderr(&bound).contains("brokkr_paid_unbound"),
+        "{}",
+        stderr(&bound)
+    );
+    assert_eq!(
+        sent,
+        1,
+        "the bound profile is dispatched once: {}",
+        stderr(&bound)
+    );
+    assert!(
+        stderr(&bound).contains("trial_row_missing"),
+        "{}",
+        stderr(&bound)
+    );
 }
 
 // ---- `report --journal`: the typed join (decision 0119) -------------------

@@ -21,32 +21,7 @@ fn dir(path: &Path) {
 use std::os::unix::fs::DirBuilderExt;
 const CANARY: &str = "SYNTHETIC-CREDENTIAL-CANARY-DO-NOT-RETAIN";
 const SEAM_SENTINEL: &str = "SWARMAIL_EVAL_SEAM_SENTINEL";
-/// The stand-in decodes TOML independently with the standard library's
-/// tomllib (Python 3.11+). /usr/bin/python3 is new enough on Linux runners,
-/// but macOS ships 3.9 there, so take the first python3 that has tomllib,
-/// trying /usr/bin/python3 and then the test's PATH.
-fn standin_python() -> &'static str {
-    static PYTHON: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    PYTHON.get_or_init(|| {
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        std::iter::once(PathBuf::from("/usr/bin/python3"))
-            .chain(std::env::split_paths(&path).map(|dir| dir.join("python3")))
-            .filter(|candidate| candidate.is_absolute())
-            .find(|candidate| {
-                std::process::Command::new(candidate)
-                    .args(["-c", "import tomllib"])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .is_ok_and(|status| status.success())
-            })
-            .expect("the wrapper stand-in needs a python3 with tomllib (3.11+)")
-            .to_str()
-            .expect("a UTF-8 interpreter path")
-            .to_owned()
-    })
-}
+use common::paid::standin_python;
 struct Case {
     root: tempfile::TempDir,
     work: PathBuf,
@@ -89,7 +64,7 @@ impl Case {
             "codex" => {
                 json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":CANARY,"access_token":CANARY,"refresh_token":"SOURCE-REFRESH-NEVER-FORWARDED","account_id":"synthetic-account"},"last_refresh":"2026-10-26T00:00:00Z"})
             }
-            _ => json!({"DASHSCOPE_API_KEY":CANARY,"SPARK_API_KEY":"SPARK-CANARY"}),
+            _ => json!({"DASHSCOPE_API_KEY":CANARY,"SPARK_API_KEY":"SYNTHETIC-SPARK-CANARY"}),
         };
         let credential = base.join("selected private.json");
         private(&credential, auth.to_string().as_bytes());
@@ -160,12 +135,11 @@ fn executable_driver(base: &Path, name: &str, record: &Path) -> PathBuf {
 }
 
 #[test]
-fn via_brokkr_refuses_before_any_private_read() {
-    // The driver's invocation form has never been observed (F2), so a valid,
-    // executable driver is still refused: before the EVAL inputs, the
-    // selection file and the credential file are read, and before anything is
-    // spawned. The selection here is an unreadable sentinel that the direct
-    // launch would refuse differently, so the category proves the order.
+fn via_brokkr_without_a_driver_pin_refuses_before_any_spawn_or_private_write() {
+    // Route (b) launches only a driver the selection pins: a version-1
+    // selection has no `nested` member, so a valid, executable driver is
+    // refused `driver_pin_missing` after the selection is read and before
+    // any credential is projected or anything is spawned.
     for (family, model) in [
         ("claude", "claude-sonnet-5-5"),
         ("codex", "gpt-6-luna"),
@@ -174,14 +148,6 @@ fn via_brokkr_refuses_before_any_private_read() {
         let c = Case::new(family);
         let record = c.root.path().join("driver-record");
         let driver = executable_driver(c.root.path(), "driver-ok", &record);
-        std::fs::set_permissions(&c.manifest, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let direct = c.command(family, model).output().unwrap();
-        assert_eq!(direct.status.code(), Some(2), "{family}");
-        let direct_err = String::from_utf8_lossy(&direct.stderr).into_owned();
-        assert!(
-            direct_err.contains("private_path_unavailable"),
-            "{family}: the sentinel is a refusing selection: {direct_err}"
-        );
         let out = c
             .command(family, model)
             .arg("--via-brokkr")
@@ -190,8 +156,8 @@ fn via_brokkr_refuses_before_any_private_read() {
             .unwrap();
         assert_eq!(out.status.code(), Some(2), "{family}");
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
-        assert!(err.contains("driver_contract_unknown"), "{family}: {err}");
-        assert!(!err.contains("private_path_unavailable"), "{family}: {err}");
+        assert!(err.contains("driver_pin_missing"), "{family}: {err}");
+        assert!(!err.contains(CANARY));
         assert!(!record.exists(), "{family}: nothing was spawned");
         assert!(!c.capture.exists(), "{family}: no CLI was launched");
         assert!(
@@ -874,7 +840,7 @@ fn declared_surfaces_are_required_canonical_model_bound_and_retained() {
         duplicate = duplicate.replacen("\"revision\":1", "\"revision\":1,\"revision\":1", 1);
         assert!(results::read(duplicate.as_bytes()).is_err());
         let root = runner::private_tempdir("surface-proof-").unwrap();
-        artifacts::retain_trial(root.path(), &row, None).unwrap();
+        artifacts::retain_trial(root.path(), &row, None, None).unwrap();
         assert_eq!(
             artifacts::trial(&root.path().join(&row.trial_id))
                 .unwrap()
@@ -1217,11 +1183,11 @@ fn paid_selection(c: &Case, family: &str, sha256: &str) {
     let v1: Value = serde_json::from_slice(&std::fs::read(&c.manifest).unwrap()).unwrap();
     let selected = &v1["families"][family];
     let profile = match family {
-        "claude" => swarmail_evals::provenance::WrapperProfile::Claude2_1_310,
-        "codex" => swarmail_evals::provenance::WrapperProfile::Codex0_164_0,
-        _ => swarmail_evals::provenance::WrapperProfile::Dsh0_1_5Rc1,
+        "claude" => swarmail_evals::provenance::WrapperProfile::Claude2_1_329,
+        "codex" => swarmail_evals::provenance::WrapperProfile::Codex0_166_0,
+        _ => swarmail_evals::provenance::WrapperProfile::Dsh0_2_2Rc1,
     };
-    let v2 = json!({"version":2,"families":{family:{
+    let mut v2 = json!({"version":2,"families":{family:{
         "executable": native_standin(c),
         "credential_file": selected["credential_file"],
         "profile": profile,
@@ -1229,8 +1195,35 @@ fn paid_selection(c: &Case, family: &str, sha256: &str) {
         "cli_sha256": sha256,
         "auth_shape": wrappers::auth_shape(family),
     }}});
+    // dsh runs as an interpreted package (accepted 0137's 2026-11-23
+    // amendment): the stand-in is its node runtime, given the entry first.
+    if family == "dsh" {
+        let pin = dsh_pin(c);
+        v2["families"]["dsh"]["executable"] = json!(pin.entry_path());
+        v2["families"]["dsh"]["cli_sha256"] = json!(pin.identity());
+        v2["families"]["dsh"]["interpreted"] = json!(pin);
+    }
     std::fs::remove_file(&c.manifest).unwrap();
     private(&c.manifest, v2.to_string().as_bytes());
+}
+/// The dsh package a paid selection pins with the native stand-in as its
+/// runtime: an entry file and its manifest.
+fn dsh_pin(c: &Case) -> swarmail_evals::interpreted::Pin {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = c.root.path().join("dsh-package");
+    if !root.exists() {
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        for dir in [root.clone(), root.join("bin")] {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(root.join("bin/dsh.js"), "// dsh entry\n").unwrap();
+        std::fs::set_permissions(
+            root.join("bin/dsh.js"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+    }
+    swarmail_evals::interpreted::pin(&native_standin(c), "v22.11.0", &root, "bin/dsh.js").unwrap()
 }
 /// The native stand-in a paid selection pins (a pinned CLI must be a native
 /// image), forwarding to the case's capturing Python stand-in. This proves
@@ -1249,10 +1242,133 @@ fn replace_private(path: &Path, bytes: &[u8]) {
     private(path, bytes);
 }
 
+/// Hold 1 on a73ac17a, on every platform: with neither the coordinator's
+/// grant nor the recipe's read-only binds, a direct paid launch refuses
+/// before any credential is read or HOME written. Nothing here needs the
+/// grant or /proc, so macOS runs it too.
+#[test]
+fn a_bare_paid_launch_refuses_unbound_on_every_platform() {
+    for (family, model) in [
+        ("claude", "claude-opus-5-5"),
+        ("dsh", "spark-glm/GLM-5.3-Flash-EXL3"),
+    ] {
+        let c = Case::new(family);
+        let script = native_standin(&c);
+        paid_selection(
+            &c,
+            family,
+            &swarmail_evals::identity::file_hash(&script).unwrap(),
+        );
+        let out = c.command(family, model).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{err}");
+        // Claude's and codex's read-only recipe auth awaits an operator
+        // ruling; dsh's selection lies outside any recipe HOME here.
+        let unbound = if family == "dsh" {
+            "paid_unbound: recipe_bind_home_unknown"
+        } else {
+            "paid_unbound: recipe_auth_unruled"
+        };
+        assert!(err.contains(unbound), "{err}");
+        assert!(!err.contains(CANARY));
+        assert!(!c.capture.exists());
+        assert!(std::fs::read_dir(&c.home).unwrap().next().is_none());
+    }
+}
+
+/// The wrapper's wiring of the declared inventory (the panel's low on
+/// c93e3931): a dsh selection under a source HOME's
+/// `.config/swarmail-evals` makes the real wrapper resolve all thirteen
+/// read-only entries against that HOME. With one declared source (`~/.volta`)
+/// absent it refuses `recipe_bind_missing`; once every source exists, the
+/// host's own writable mounts refuse `recipe_bind_writable` instead. Both
+/// before any credential read or HOME write. The mount table is /proc's.
+/// An empty inventory turns the first refusal into `recipe_bind_writable`.
+/// A host lacking a DNS input skips it, except on GitHub's runners
+/// (`GITHUB_ACTIONS=true`), where it fails.
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+#[test]
+fn a_recipe_selection_reproves_every_declared_home_source() {
+    // A host without every DNS input refuses on that input first, which
+    // would hide the HOME inventory: the proof needs a host that has them
+    // (CI's runners and the operator's host do; a bare sandbox may not).
+    // On GitHub's runners (`GITHUB_ACTIONS=true`, which they alone set; a
+    // delivery seat sets `CI` too) a missing input fails instead, so the
+    // proof never passes there by skipping (the panel's low on 9f28d4e8).
+    let missing: Vec<_> = swarmail_evals::binds::DNS
+        .iter()
+        .filter(|p| !Path::new(p).exists())
+        .collect();
+    if !missing.is_empty() {
+        assert!(
+            std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true"),
+            "GitHub's runner must execute this proof, but it lacks {missing:?}"
+        );
+        eprintln!("skipped: this host lacks the DNS inputs {missing:?}");
+        return;
+    }
+    let mut c = Case::new("dsh");
+    let script = native_standin(&c);
+    paid_selection(
+        &c,
+        "dsh",
+        &swarmail_evals::identity::file_hash(&script).unwrap(),
+    );
+    let source = c.root.path().join("source-home");
+    for d in [
+        "",
+        ".config",
+        ".config/swarmail-evals",
+        ".local",
+        ".local/share",
+        ".local/share/brokkr-0.15.2",
+        ".local/share/claude",
+        ".local/bin",
+        ".claude",
+        ".codex",
+        ".dsh",
+        ".dsh/profiles",
+    ] {
+        dir(&source.join(d));
+    }
+    private(&source.join(".claude.json"), b"{}");
+    private(&source.join(".dsh/spark.env"), b"");
+    let selection = source.join(".config/swarmail-evals/selection.json");
+    private(&selection, &std::fs::read(&c.manifest).unwrap());
+    c.manifest = selection;
+    let launch = |want: &str| {
+        let out = c
+            .command("dsh", "spark-glm/GLM-5.3-Flash-EXL3")
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{err}");
+        assert!(
+            err.contains(&format!("paid_unbound: {want}")),
+            "{want}: {err}"
+        );
+        assert!(!err.contains(CANARY));
+        assert!(!c.capture.exists());
+        assert!(std::fs::read_dir(&c.home).unwrap().next().is_none());
+    };
+    launch("recipe_bind_missing");
+    dir(&source.join(".volta"));
+    launch("recipe_bind_writable");
+}
+
 /// Proposed 0137 at the launch boundary: a version-2 selection recheck the
 /// pinned bytes immediately before exec, projects only the selected dsh
 /// route's attested key, and refuses an expired login or an absent family
-/// without launching; version 1 callers are unchanged (tests above).
+/// without launching; version 1 callers are unchanged (tests above). Every
+/// launch here goes through the coordinator's grant, which is Linux's; the
+/// portable refusal of a bare launch is the test above.
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
 #[test]
 fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
     let refused = |c: &Case, extra: &[String], family: &str, model: &str, code: &str| {
@@ -1266,9 +1382,18 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
                 std::fs::remove_file(&path).unwrap();
             }
         }
-        let mut cmd = c.command(family, model);
-        cmd.args(extra);
-        let out = cmd.output().unwrap();
+        // Every launch here asks the coordinator's grant stand-in: a bare
+        // paid launch is the recipe route, refused below.
+        let (mut cmd, grant) = bound(c, family, model);
+        let grant = match extra {
+            [flag, value] if *flag == swarmail_evals::runner::PAID_LAUNCH_ARG => {
+                cmd = c.command(family, model);
+                cmd.args(extra);
+                value.clone()
+            }
+            _ => grant,
+        };
+        let out = nested::granted(&cmd, 1, &grant).output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{code}: {out:?}");
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(err.contains(code), "{code}: {err}");
@@ -1287,7 +1412,7 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
         if family == "dsh" {
             replace_private(
                 &credential,
-                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SPARK-CANARY","valid_through":future}})
+                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SYNTHETIC-SPARK-CANARY","valid_through":future}})
                     .to_string()
                     .as_bytes(),
             );
@@ -1297,16 +1422,23 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
             family,
             &swarmail_evals::identity::file_hash(&script).unwrap(),
         );
-        let out = c.command(family, model).output().unwrap();
+        let (cmd, grant) = bound(&c, family, model);
+        let out = nested::granted(&cmd, 1, &grant).output().unwrap();
         assert!(out.status.success(), "{family} {model}: {out:?}");
         assert!(c.capture.exists());
+        // The pinned runtime ran the pinned entry directly, no shim between.
+        if family == "dsh" {
+            let seen: Value = serde_json::from_slice(&std::fs::read(&c.capture).unwrap()).unwrap();
+            assert_eq!(seen["argv"][0], json!(dsh_pin(&c).entry_path()));
+            assert_eq!(seen["argv"][1], "--profile");
+        }
         // The selected route's key alone reached the CLI (the stand-in checks
         // the projection); an expired attestation refuses before exec.
         if family == "dsh" {
             let route = if model.starts_with("dashscope") {
-                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":1},"SPARK_API_KEY":{"key":"SPARK-CANARY","valid_through":future}})
+                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":1},"SPARK_API_KEY":{"key":"SYNTHETIC-SPARK-CANARY","valid_through":future}})
             } else {
-                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SPARK-CANARY","valid_through":1}})
+                json!({"DASHSCOPE_API_KEY":{"key":CANARY,"valid_through":future},"SPARK_API_KEY":{"key":"SYNTHETIC-SPARK-CANARY","valid_through":1}})
             };
             replace_private(&credential, route.to_string().as_bytes());
             refused(&c, &[], family, model, "private_credential_expired");
@@ -1354,8 +1486,12 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
                 model,
                 "wrapper_paid_binding_invalid",
             );
+            // Valid for the bounded exchange, not through the current second
+            // alone: the coordinator reads its clock again on the request.
+            let [flag, binding] = bound(&pin, launch_horizon());
             let mut cmd = c.command(family, model);
-            cmd.args(bound(&pin, now_secs()));
+            cmd.args([&flag, &binding]);
+            let mut cmd = nested::granted(&cmd, 1, &binding);
             for entry in std::fs::read_dir(&c.home).unwrap() {
                 let path = entry.unwrap().path();
                 if path.is_dir() {
@@ -1369,8 +1505,17 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
             assert!(out.status.success(), "bound launch: {out:?}");
         }
         // A CLI replaced after preflight never runs under the pinned identity.
-        paid_selection(&c, family, &"0".repeat(64));
-        refused(&c, &[], family, model, "wrapper_cli_digest_mismatch");
+        if family == "dsh" {
+            // An interpreted package changed since preflight refuses at exec.
+            let entry = dsh_pin(&c).entry_path();
+            paid_selection(&c, family, "");
+            std::fs::write(&entry, "// replaced\n").unwrap();
+            refused(&c, &[], family, model, "wrapper_cli_package_file_changed");
+            std::fs::write(&entry, "// dsh entry\n").unwrap();
+        } else {
+            paid_selection(&c, family, &"0".repeat(64));
+            refused(&c, &[], family, model, "wrapper_cli_digest_mismatch");
+        }
         // A family the paid selection does not name has no contract.
         let other = if family == "claude" {
             "codex"
@@ -1389,7 +1534,14 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
     let credential = c.root.path().join("selected private.json");
     use base64::Engine as _;
     let e = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let stale = format!("{}.{}.sig", e.encode("{}"), e.encode(r#"{"exp":1}"#));
+    // Synthetic equipment (its signature is the canary), so the seam lets
+    // it through to the expiry check it is here to prove.
+    let stale = format!(
+        "{}.{}.{}",
+        e.encode("{}"),
+        e.encode(r#"{"exp":1}"#),
+        e.encode(CANARY)
+    );
     replace_private(
         &credential,
         json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":CANARY,"access_token":stale,"refresh_token":"r","account_id":"a"},"last_refresh":"2026-11-22T00:00:00Z"})
@@ -1404,9 +1556,32 @@ fn paid_selection_rechecks_the_pin_and_validity_before_exec() {
     );
     refused(&c, &[], "codex", "gpt-6-luna", "private_credential_expired");
 }
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
+/// A direct paid launch with the coordinator's binding for the current
+/// selection, valid from now for an hour: the command and the grant it asks
+/// for, one string for both.
+fn bound(c: &Case, family: &str, model: &str) -> (std::process::Command, String) {
+    let sha = swarmail_evals::wrappers::contract_identity(&c.manifest, family, false)
+        .unwrap_or_else(|_| "0".repeat(64));
+    let grant = format!("{sha}:{}", launch_horizon());
+    let mut cmd = c.command(family, model);
+    cmd.arg(swarmail_evals::runner::PAID_LAUNCH_ARG).arg(&grant);
+    (cmd, grant)
 }
+/// The last second an intended-valid binding is admitted: an hour past the
+/// epoch it is built at, far beyond the bounded child exchange, and inside
+/// every positive fixture's login (claude's ends in 2033, dsh's in 2100).
+/// A binding through the current second alone expired whenever a second
+/// ticked between building it and the coordinator's answer (`grant::answer`
+/// reads its own clock), which refused a valid request as
+/// `paid_grant_refused` on a loaded host.
+fn launch_horizon() -> u64 {
+    common::paid::now() + common::paid::HOUR
+}
+#[path = "mount_proof.rs"]
+mod mount_proof;
+#[path = "nested.rs"]
+mod nested;
+#[path = "real_driver.rs"]
+mod real_driver;
+#[path = "release_seam.rs"]
+mod release_seam;

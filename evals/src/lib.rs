@@ -13,13 +13,16 @@ pub mod admission;
 #[path = "../../benches/mail_compare/api.rs"]
 pub mod api;
 pub mod apibench;
+pub mod binds;
 pub mod bridge;
 pub mod capture;
 pub mod client_matrix;
 #[path = "../../benches/mail_compare/clients/mod.rs"]
 pub mod clients;
 pub mod comparison;
+pub mod driver;
 pub mod fixture;
+pub mod grant;
 pub mod isolation;
 pub mod mail;
 pub mod mailsource;
@@ -44,6 +47,7 @@ pub mod testexec;
 
 pub mod artifacts;
 pub mod identity;
+pub mod interpreted;
 pub mod provenance;
 pub mod results;
 
@@ -56,4 +60,5 @@ pub mod baseline;
 pub mod fixture_http;
 pub mod journal;
 pub mod toolvalues;
+pub mod usage;
 pub mod wrappers;

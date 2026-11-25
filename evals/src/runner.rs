@@ -252,11 +252,32 @@ pub const BUILTINS: [&str; 2] = ["oracle", "null"];
 /// 0119, revision 2), decided on the public agent argv and the declared
 /// profile alone, before anything starts.
 ///
-/// brokkr's driver invocation (F2) has never been observed, so an argv that
-/// asks for the driver is refused (`driver_contract_unknown`) and a
-/// `*_via_brokkr` profile declared without the flag is refused
-/// (`via_brokkr_profile_mismatch`). Both are fixed categories; the caller
+/// Route (b) of the 2026-11-23 addendum implements the driver exchange for
+/// the three amended profiles: an argv that asks for the driver passes only
+/// with one of their `*_via_brokkr` selectors. A superseded `*_via_brokkr`
+/// selector stays `driver_contract_unknown`; the flag without a via-brokkr
+/// selector, or such a selector without the flag, is
+/// `via_brokkr_profile_mismatch`. Both are fixed categories; the caller
 /// prints one and exits 2 with no row.
+/// The wrapper switches only the runner appends (part of #404): a caller's
+/// agent argv carrying one, in either spelling, is refused before anything
+/// starts, so a binding or a launch pipe is never the caller's to claim.
+pub const RESERVED_FLAGS: [&str; 2] = [PAID_LAUNCH_ARG, LAUNCH_REPORT_ARG];
+/// The typed refusal of a caller's agent argv that names a runner switch.
+pub const RESERVED_FLAG_REFUSAL: &str = "agent_argv_reserved_flag";
+/// Whether a caller's agent argv names a reserved runner switch, as its own
+/// word or as `--switch=value`, anywhere after the program.
+pub fn reserved_flag<S: AsRef<OsStr>>(argv: &[S]) -> Option<&'static str> {
+    argv.iter().skip(1).find_map(|arg| {
+        let bytes = arg.as_ref().as_bytes();
+        RESERVED_FLAGS.iter().find_map(|flag| {
+            let f = flag.as_bytes();
+            (bytes == f || (bytes.starts_with(f) && bytes.get(f.len()) == Some(&b'=')))
+                .then_some(RESERVED_FLAG_REFUSAL)
+        })
+    })
+}
+
 pub fn via_brokkr_refusal(
     argv: &[OsString],
     profile: Option<crate::provenance::WrapperProfile>,
@@ -266,12 +287,13 @@ pub fn via_brokkr_refusal(
         let bytes = arg.as_bytes();
         bytes == FLAG || bytes.starts_with(b"--via-brokkr=")
     });
-    if asks {
-        Some("driver_contract_unknown")
-    } else if profile.is_some_and(|p| p.via_brokkr()) {
-        Some("via_brokkr_profile_mismatch")
-    } else {
-        None
+    let via = profile.is_some_and(|p| p.via_brokkr());
+    match (asks, via) {
+        // Route (b) is implemented for the three amended profiles only.
+        (true, true) if profile.is_some_and(|p| p.approved()) => None,
+        (true, true) => Some("driver_contract_unknown"),
+        (true, false) | (false, true) => Some("via_brokkr_profile_mismatch"),
+        (false, false) => None,
     }
 }
 
@@ -490,24 +512,106 @@ fn launch_pipe(cmd: &mut Command) -> io::Result<io::PipeReader> {
     }
     Ok(reader)
 }
-/// Whether the wrapper reported exactly `ready` and nothing after it. A
-/// refusal, an exec failure, or a wrapper that died first leaves anything
-/// else: no model ran, so the attempt is unstarted, never a measurement.
-fn launch_reported_ready(reader: &mut io::PipeReader) -> bool {
+/// What a wrapper reported on its launch pipe.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LaunchReport {
+    /// Anything but the two shapes below: a refusal, an exec failure, a
+    /// wrapper that died first, or a driver that accepted nothing. No model
+    /// ran, so the attempt is unstarted, never a measurement.
+    Unstarted,
+    /// Exactly `ready`: the CLI (or the nested session) began, and no
+    /// receipt followed.
+    Ready,
+    /// `ready`, then one nested-driver receipt line (route (b)).
+    Nested(crate::usage::Receipt),
+}
+/// The flag that tells a nested wrapper descriptor 3 is its launch pipe
+/// when no paid binding already says so.
+pub const LAUNCH_REPORT_ARG: &str = "--launch-report";
+/// Classify the bytes a wrapper wrote on its launch pipe.
+pub fn launch_report_of(out: &[u8]) -> LaunchReport {
+    if out == LAUNCH_READY {
+        return LaunchReport::Ready;
+    }
+    match out
+        .strip_prefix(LAUNCH_READY)
+        .and_then(|rest| rest.strip_suffix(b"\n"))
+        .filter(|line| !line.contains(&b'\n'))
+        .and_then(crate::usage::parse_receipt)
+    {
+        Some(receipt) => LaunchReport::Nested(receipt),
+        None => LaunchReport::Unstarted,
+    }
+}
+/// Read a launch pipe, bounded: a report longer than any valid one is
+/// unstarted.
+fn launch_report(reader: &mut io::PipeReader) -> LaunchReport {
     use std::io::Read as _;
+    let limit = LAUNCH_READY.len() + crate::usage::RECEIPT_LIMIT;
     let mut out = Vec::new();
-    let mut buf = [0u8; 64];
+    let mut buf = [0u8; 512];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
-            Ok(n) if out.len() + n <= 64 => out.extend_from_slice(&buf[..n]),
-            Ok(_) => return false,
+            Ok(n) if out.len() + n <= limit => out.extend_from_slice(&buf[..n]),
+            Ok(_) => return LaunchReport::Unstarted,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             // WouldBlock: a stray holder of the write end; what arrived counts.
             Err(_) => break,
         }
     }
-    out == LAUNCH_READY
+    launch_report_of(&out)
+}
+/// Turn the agents' launch reports into the trial's sessions, in assignment
+/// order, and its harness error, if any. `nested` is the family of a
+/// nested-driver trial. Every expected agent keeps an entry, whatever its
+/// siblings did; the first infrastructure ending in assignment order is the
+/// trial's.
+pub fn settle_launch(
+    reports: &[LaunchReport],
+    nested: Option<&str>,
+) -> (Option<Vec<crate::usage::Session>>, Result<(), String>) {
+    use crate::usage::{RECEIPT_MISSING, Session, UNSTARTED};
+    let Some(family) = nested else {
+        // A direct launch never sends a receipt.
+        return if reports.iter().all(|r| *r == LaunchReport::Ready) {
+            (None, Ok(()))
+        } else {
+            (None, Err("agent_unstarted".into()))
+        };
+    };
+    let mut first: Option<String> = None;
+    let mut fail = |code: &str| {
+        first.get_or_insert_with(|| code.to_string());
+    };
+    let mut owners = std::collections::BTreeSet::new();
+    let sessions = reports
+        .iter()
+        .enumerate()
+        .map(|(i, report)| {
+            let agent = i as u8;
+            match report {
+                LaunchReport::Ready => Session::without_receipt(agent, RECEIPT_MISSING),
+                LaunchReport::Nested(r)
+                    if r.family == family && owners.insert(r.attempt_id.clone()) =>
+                {
+                    match crate::driver::static_code(&r.disposition) {
+                        Some("completed") => {}
+                        Some(code) => fail(code),
+                        None => fail(UNSTARTED),
+                    }
+                    Session::from_receipt(agent, r)
+                }
+                // Another family's receipt, an attempt a sibling already
+                // owns, or no launch at all: nothing of it is attributable.
+                LaunchReport::Nested(_) | LaunchReport::Unstarted => {
+                    fail(UNSTARTED);
+                    Session::without_receipt(agent, UNSTARTED)
+                }
+            }
+        })
+        .collect();
+    (Some(sessions), first.map_or(Ok(()), Err))
 }
 
 /// Where a trial's redacted value capture goes and which sentinels its
@@ -2128,6 +2232,9 @@ struct Trial {
     bridge: Option<crate::bridge::Bridge>,
     /// Value capture's plan and the slot its sealed result is left in.
     capture: Option<(CapturePlan, CaptureSink)>,
+    /// A nested-driver trial's sessions, settled from every launch report
+    /// in assignment order.
+    sessions: Option<Vec<crate::usage::Session>>,
 }
 
 /// How long a competitor adapter gets, after its stdin closes, to clean up
@@ -2293,6 +2400,9 @@ pub fn validate_request(req: &TrialRequest) -> Result<(Task, String), String> {
     }
     if BUILTINS.contains(&label) && !req.argv.is_empty() {
         return Err(format!("the built-in agent {label} takes no command"));
+    }
+    if let Some(refusal) = reserved_flag(&req.argv) {
+        return Err(refusal.into());
     }
     if !BUILTINS.contains(&label) && req.argv.is_empty() {
         return Err(format!(
@@ -2658,6 +2768,7 @@ pub async fn probe_contract(
         diagnostics: Vec::new(),
         bridge: None,
         capture: None,
+        sessions: None,
     };
     let probed = probe_contract_body(target, swarmail, plan, scratch.path(), &mut trial).await;
     let stopped = trial.stop_servers().await;
@@ -2816,6 +2927,13 @@ async fn run_body(
     {
         return Err("competitor_task_not_applicable".into());
     }
+    // A paid slot's agents launch only on the coordinator's grant (part of
+    // #404): its endpoints, one per expected agent, must be here before any
+    // server starts, or nothing runs.
+    let grant_ends = match paid {
+        Some(_) => crate::grant::claim(task.agent_count as usize)?,
+        None => Vec::new(),
+    };
     let (smtp, http, mcp_url, surface): (
         SocketAddr,
         Option<SocketAddr>,
@@ -2966,6 +3084,14 @@ async fn run_body(
     let mut agent_groups = Vec::new();
     let mut spawn_failed = false;
     let mut launches = Vec::new();
+    // A nested-driver trial (route (b)): its wrapper reports the session's
+    // usage on the launch pipe, paid or not.
+    let nested = match &provenance.agent.tool_surface {
+        crate::provenance::ToolSurface::Wrapper { profile, .. } if profile.via_brokkr() => {
+            Some(profile.family())
+        }
+        _ => None,
+    };
     for (index, id) in ids.iter().enumerate() {
         let vars = PromptVars {
             app_url: &app_url,
@@ -3009,6 +3135,15 @@ async fn run_body(
         if let Some(paid) = paid {
             cmd.arg(PAID_LAUNCH_ARG)
                 .arg(format!("{}:{}", paid.cli_sha256, paid.valid_through));
+        } else if nested.is_some() {
+            cmd.arg(LAUNCH_REPORT_ARG);
+        }
+        if let Some(end) = grant_ends.get(index).copied() {
+            // This agent's endpoint, alone, at the descriptor its wrapper
+            // asks on; every other descriptor stays close-on-exec.
+            unsafe { cmd.pre_exec(move || crate::grant::place(&[end])) };
+        }
+        if paid.is_some() || nested.is_some() {
             match launch_pipe(&mut cmd) {
                 Ok(reader) => launches.push(reader),
                 Err(_) => {
@@ -3106,8 +3241,11 @@ async fn run_body(
         return Err("agent_spawn".into());
     }
     cleanup_result?;
-    if !launches.iter_mut().all(launch_reported_ready) {
-        return Err("agent_unstarted".into());
+    if paid.is_some() || nested.is_some() {
+        let reports: Vec<_> = launches.iter_mut().map(launch_report).collect();
+        let (sessions, settled) = settle_launch(&reports, nested);
+        trial.sessions = sessions;
+        settled?;
     }
     match end {
         AgentsEnd::ServerDied => return Err("server_died".into()),
@@ -3292,6 +3430,9 @@ fn safe_trial_category(error: &str) -> &'static str {
         | "build_context_changed" => "swarmail_unavailable",
         "agent_spawn" => "agent_spawn_failed",
         "agent_unstarted" => "agent_unstarted",
+        "paid_grant_channel_missing"
+        | "paid_grant_unsupported"
+        | "paid_grant_endpoints_invalid" => "paid_grant_channel_missing",
         "adapter_cleanup_unproved" => "trial_cleanup_unproved",
         "adapter_spawn" => "adapter_spawn_failed",
         "adapter_tools_mismatch" => "adapter_tools_mismatch",
@@ -3312,13 +3453,13 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
     let id = req.trial_id.clone().unwrap_or_else(new_trial_id);
     if req.concurrency.unwrap_or(1) != 1 {
         eprintln!("swarmail-evals: harness error: concurrency_unsupported");
-        return finalize(&req, refused_row(&req, &id), None);
+        return finalize(&req, refused_row(&req, &id), None, None);
     }
     let admission = match crate::admission::Admission::acquire() {
         Ok(guard) => Arc::new(guard),
         Err(category) => {
             eprintln!("swarmail-evals: harness error: {category}");
-            return finalize(&req, refused_row(&req, &id), None);
+            return finalize(&req, refused_row(&req, &id), None, None);
         }
     };
     let fallback = refused_row(&req, &id);
@@ -3340,7 +3481,7 @@ async fn run_admitted_trial(
         req.fixture.seed, req.fixture.fixture_time
     );
     let sink: Option<CaptureSink> = req.capture.as_ref().map(|_| Arc::default());
-    let (mut row, snap) =
+    let (mut row, snap, usage) =
         execute_trial(&mut req, swarmail_bin, id, admission.clone(), sink.clone()).await;
     if req
         .target_build
@@ -3350,7 +3491,7 @@ async fn run_admitted_trial(
         row.outcome = Outcome::HarnessError;
         row.failure_class = Some(FailureClass::HarnessError);
     }
-    let row = finalize(&req, row, snap.as_ref());
+    let row = finalize(&req, row, snap.as_ref(), usage.as_ref());
     if let (Some(plan), Some(sink)) = (&req.capture, &sink) {
         write_value_capture(plan, sink, &row);
     }
@@ -3383,16 +3524,32 @@ fn write_value_capture(plan: &CapturePlan, sink: &CaptureSink, row: &TrialResult
     }
 }
 
-pub fn finalize(req: &TrialRequest, mut row: TrialResult, snap: Option<&Snapshot>) -> TrialResult {
+pub fn finalize(
+    req: &TrialRequest,
+    mut row: TrialResult,
+    snap: Option<&Snapshot>,
+    usage: Option<&crate::usage::Companion>,
+) -> TrialResult {
     if row.validate().is_err()
         || crate::artifacts::encode(&row, crate::provenance::RESULT_LIMIT - 1).is_err()
     {
         row.outcome = Outcome::HarnessError;
         row.failure_class = Some(FailureClass::HarnessError);
     }
+    // A scored nested row is scored only with its usage companion committed
+    // beside it (proposed 0138): with no retained leaf to commit it in, or
+    // no companion, it is a harness error, never a scored row without usage.
+    if row.outcome != Outcome::HarnessError
+        && crate::usage::nested_profile(&row).is_some()
+        && (req.artifacts_dir.is_none() || usage.is_none())
+    {
+        eprintln!("swarmail-evals: harness error: usage_companion_unretained");
+        row.outcome = Outcome::HarnessError;
+        row.failure_class = Some(FailureClass::HarnessError);
+    }
     if let Some(root) = &req.artifacts_dir
         && crate::artifacts::resolve_root(root)
-            .and_then(|real| crate::artifacts::retain_trial(&real, &row, snap))
+            .and_then(|real| crate::artifacts::retain_trial(&real, &row, snap, usage))
             .is_err()
     {
         row.outcome = Outcome::HarnessError;
@@ -3408,19 +3565,23 @@ async fn execute_trial(
     trial_id: String,
     admission: Arc<crate::admission::Admission>,
     sink: Option<CaptureSink>,
-) -> (TrialResult, Option<Snapshot>) {
+) -> (
+    TrialResult,
+    Option<Snapshot>,
+    Option<crate::usage::Companion>,
+) {
     let (task, label) = match validate_request(req) {
         Ok(v) => v,
         Err(_) => {
             eprintln!("swarmail-evals: harness error: request_invalid");
-            return (refused_row(req, &trial_id), None);
+            return (refused_row(req, &trial_id), None, None);
         }
     };
     let caller = match CallerEnv::capture() {
         Ok(caller) => caller,
         Err(_) => {
             eprintln!("swarmail-evals: harness error: caller_context_unavailable");
-            return (refused_row(req, &trial_id), None);
+            return (refused_row(req, &trial_id), None, None);
         }
     };
     #[cfg(test)]
@@ -3452,14 +3613,14 @@ async fn execute_trial(
         (Ok(t), Ok(i)) => (t, i),
         _ => {
             eprintln!("swarmail-evals: harness error: signal_handlers_unavailable");
-            return (refused_row(req, &trial_id), None);
+            return (refused_row(req, &trial_id), None, None);
         }
     };
     let scratch = match private_tempdir("swarmail-eval-") {
         Ok(d) => Arc::new(d),
         Err(_) => {
             eprintln!("swarmail-evals: harness error: private_directory_unavailable");
-            return (refused_row(req, &trial_id), None);
+            return (refused_row(req, &trial_id), None, None);
         }
     };
     let captured = make_provenance(req, req.target_build.as_ref(), None);
@@ -3490,6 +3651,7 @@ async fn execute_trial(
                 diagnostics: Vec::new(),
                 bridge: None,
                 capture: capture_owner,
+                sessions: None,
             };
             let mut exits = Vec::new();
             let mut snap = None;
@@ -3533,7 +3695,7 @@ async fn execute_trial(
                 Ok(()) => outcome,
                 Err(e) => Err(e),
             };
-            (outcome, exits, snap, trial.diagnostics)
+            (outcome, exits, snap, trial.diagnostics, trial.sessions)
         })
     };
     let joined = tokio::select! {
@@ -3617,10 +3779,11 @@ async fn execute_trial(
                 provenance: make_provenance(req, req.target_build.as_ref(), None),
             },
             None,
+            None,
         );
     };
-    let (mut verdict, exits, snap, mut diagnostics) = match joined {
-        Ok((outcome, exits, snap, mut diagnostics)) => {
+    let (mut verdict, exits, snap, mut diagnostics, sessions) = match joined {
+        Ok((outcome, exits, snap, mut diagnostics, sessions)) => {
             if outcome
                 .as_ref()
                 .is_err_and(|e| e == "build_context_changed")
@@ -3660,7 +3823,7 @@ async fn execute_trial(
                     },
                 },
             };
-            (verdict, exits, snap, diagnostics)
+            (verdict, exits, snap, diagnostics, sessions)
         }
         Err(_) => {
             // A panic: the body's handles are gone, so its groups are
@@ -3671,6 +3834,7 @@ async fn execute_trial(
                 Vec::new(),
                 None,
                 vec!["stage=runner category=panicked".into()],
+                None,
             )
         }
     };
@@ -3742,7 +3906,9 @@ async fn execute_trial(
         }
     }
     drop(scratch);
-    (row, snap)
+    // The companion is built once the row it binds to is final.
+    let usage = sessions.and_then(|s| crate::usage::Companion::new(&row, s));
+    (row, snap, usage)
 }
 
 /// Resolve facts from actual inputs; absence is never a guessed identity.
@@ -3875,7 +4041,12 @@ pub fn make_provenance(
             chaos,
         },
         agent: AgentIdentity {
-            tool_surface: ToolSurface::for_request(valid.is_some(), builtin, req.wrapper_profile),
+            tool_surface: ToolSurface::for_request(
+                valid.is_some(),
+                builtin,
+                req.wrapper_profile,
+                crate::wrappers::argv_codex_class(&req.argv),
+            ),
             kind: if valid.is_none() {
                 AgentKind::Invalid
             } else if builtin {
@@ -6152,17 +6323,30 @@ mod identity_tests {
         assert_eq!(ids[0].inbox, "eval-abcdef12-ada");
     }
 
-    /// The trial refuses the wrapper's driver flag wherever it stands in the
-    /// public argv, and a via-brokkr profile that does not carry it.
+    /// The driver flag passes only beside an amended via-brokkr profile,
+    /// wherever it stands in the public argv; a superseded via-brokkr profile
+    /// stays unimplemented and every other pairing is a mismatch.
     #[test]
-    fn via_brokkr_is_refused_at_every_argv_position_and_profile() {
+    fn via_brokkr_passes_only_with_an_amended_via_profile() {
         use crate::provenance::WrapperProfile as P;
         let os = |v: &[&str]| v.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
-        let direct = [P::Claude2_1_310, P::Codex0_164_0, P::Dsh0_1_5Rc1];
-        let via = [
+        let direct = [
+            P::Claude2_1_310,
+            P::Codex0_164_0,
+            P::Dsh0_1_5Rc1,
+            P::Claude2_1_329,
+            P::Codex0_166_0,
+            P::Dsh0_2_2Rc1,
+        ];
+        let superseded = [
             P::Claude2_1_310ViaBrokkr,
             P::Codex0_164_0ViaBrokkr,
             P::Dsh0_1_5Rc1ViaBrokkr,
+        ];
+        let amended = [
+            P::Claude2_1_329ViaBrokkr,
+            P::Codex0_166_0ViaBrokkr,
+            P::Dsh0_2_2Rc1ViaBrokkr,
         ];
         let flagged = [
             os(&["--via-brokkr", "/d", "agent-claude"]),
@@ -6170,34 +6354,165 @@ mod identity_tests {
             os(&["agent-claude", "--model", "m", "--via-brokkr"]),
             os(&["agent-claude", "--via-brokkr=/d"]),
         ];
+        let refusal = crate::runner::via_brokkr_refusal;
         for argv in &flagged {
-            for profile in std::iter::once(None)
-                .chain(direct.iter().copied().map(Some))
-                .chain(via.iter().copied().map(Some))
-            {
+            for profile in amended {
+                assert_eq!(refusal(argv, Some(profile)), None, "{argv:?} {profile:?}");
+            }
+            for profile in superseded {
                 assert_eq!(
-                    crate::runner::via_brokkr_refusal(argv, profile),
-                    Some("driver_contract_unknown"),
+                    refusal(argv, Some(profile)),
+                    Some("driver_contract_unknown")
+                );
+            }
+            for profile in std::iter::once(None).chain(direct.map(Some)) {
+                assert_eq!(
+                    refusal(argv, profile),
+                    Some("via_brokkr_profile_mismatch"),
                     "{argv:?} {profile:?}"
                 );
             }
         }
         // The flag is matched exactly: a lookalike is an ordinary argument.
         let plain = os(&["agent-claude", "--via-brokkr-not", "x", "--model", "--via"]);
-        assert_eq!(crate::runner::via_brokkr_refusal(&plain, None), None);
+        assert_eq!(refusal(&plain, None), None);
         for profile in direct {
-            assert_eq!(
-                crate::runner::via_brokkr_refusal(&plain, Some(profile)),
-                None
-            );
+            assert_eq!(refusal(&plain, Some(profile)), None);
         }
-        for profile in via {
+        for profile in superseded.into_iter().chain(amended) {
             assert_eq!(
-                crate::runner::via_brokkr_refusal(&plain, Some(profile)),
+                refusal(&plain, Some(profile)),
                 Some("via_brokkr_profile_mismatch")
             );
         }
-        assert_eq!(crate::runner::via_brokkr_refusal(&[], None), None);
+        assert_eq!(refusal(&[], None), None);
+    }
+
+    /// The launch pipe's two valid shapes, and the trial's usage and harness
+    /// error for each pairing of report and route.
+    #[test]
+    fn launch_reports_settle_the_rows_usage_and_harness_error() {
+        use crate::runner::{LAUNCH_READY, LaunchReport, launch_report_of, settle_launch};
+        use crate::usage::{Facts, Reason, Receipt, receipt_line};
+        let receipt = |disposition: &str| Receipt {
+            disposition: disposition.into(),
+            attempt_id: "a1".into(),
+            family: "claude".into(),
+            facts: Facts::unavailable(Reason::NoSessionFinal),
+        };
+        let with = |r: &Receipt| [LAUNCH_READY, &receipt_line(r)].concat();
+        assert_eq!(launch_report_of(LAUNCH_READY), LaunchReport::Ready);
+        let done = receipt("completed");
+        assert_eq!(
+            launch_report_of(&with(&done)),
+            LaunchReport::Nested(done.clone())
+        );
+        for bad in [
+            b"".to_vec(),
+            b"unstarted\n".to_vec(),
+            b"ready".to_vec(),
+            [LAUNCH_READY, b"nested {}\n"].concat(),
+            [with(&done), b"x".to_vec()].concat(),
+            [with(&done), receipt_line(&done)].concat(),
+            receipt_line(&done),
+        ] {
+            assert_eq!(launch_report_of(&bad), LaunchReport::Unstarted, "{bad:?}");
+        }
+        // The bounded reader: a report one byte past the longest valid one
+        // is unstarted, whatever it holds; one within it reads whole.
+        let over = |bytes: &[u8]| {
+            let (mut reader, mut writer) = std::io::pipe().unwrap();
+            std::io::Write::write_all(&mut writer, bytes).unwrap();
+            drop(writer);
+            super::launch_report(&mut reader)
+        };
+        let limit = LAUNCH_READY.len() + crate::usage::RECEIPT_LIMIT;
+        assert_eq!(over(&vec![b'x'; limit + 1]), LaunchReport::Unstarted);
+        assert_eq!(over(&with(&done)), LaunchReport::Nested(done.clone()));
+        use crate::runner::LaunchReport::*;
+        use crate::usage::{RECEIPT_MISSING, Session, UNSTARTED};
+        // Direct: exactly ready, never a receipt.
+        assert_eq!(settle_launch(&[Ready], None), (None, Ok(())));
+        assert_eq!(settle_launch(&[], None), (None, Ok(())));
+        for reports in [vec![Unstarted], vec![Nested(done.clone())]] {
+            assert_eq!(
+                settle_launch(&reports, None),
+                (None, Err("agent_unstarted".into()))
+            );
+        }
+        // Nested: each receipt is its agent's session; ready alone (a
+        // deadline kill) is usage lost, never zero, and the trial keeps its
+        // grading.
+        assert_eq!(
+            settle_launch(&[Nested(done.clone())], Some("claude")),
+            (Some(vec![Session::from_receipt(0, &done)]), Ok(()))
+        );
+        assert_eq!(
+            settle_launch(&[Ready], Some("claude")),
+            (
+                Some(vec![Session::without_receipt(0, RECEIPT_MISSING)]),
+                Ok(())
+            )
+        );
+        let lost = receipt("driver_result_missing");
+        assert_eq!(
+            settle_launch(&[Nested(lost.clone())], Some("claude")),
+            (
+                Some(vec![Session::from_receipt(0, &lost)]),
+                Err("driver_result_missing".into())
+            )
+        );
+        let odd = receipt("not_a_code");
+        assert_eq!(
+            settle_launch(&[Nested(odd.clone())], Some("claude")).1,
+            Err("agent_unstarted".into())
+        );
+        // Three agents: every one keeps its entry, in assignment order, and
+        // the first infrastructure ending is the trial's.
+        let second = Receipt {
+            attempt_id: "a2".into(),
+            ..done.clone()
+        };
+        let third = Receipt {
+            attempt_id: "a3".into(),
+            ..receipt("driver_session_failed")
+        };
+        let (sessions, settled) = settle_launch(
+            &[Nested(done.clone()), Ready, Nested(third.clone())],
+            Some("claude"),
+        );
+        assert_eq!(
+            sessions.unwrap(),
+            vec![
+                Session::from_receipt(0, &done),
+                Session::without_receipt(1, RECEIPT_MISSING),
+                Session::from_receipt(2, &third),
+            ]
+        );
+        assert_eq!(settled, Err("driver_session_failed".into()));
+        let (sessions, settled) = settle_launch(
+            &[Nested(done.clone()), Nested(second.clone()), Ready],
+            Some("claude"),
+        );
+        assert_eq!(sessions.unwrap().len(), 3);
+        assert_eq!(settled, Ok(()));
+        // A foreign family, an attempt a sibling owns, or no launch at all is
+        // unattributable: an unstarted entry and a harness error.
+        for (reports, family) in [
+            (vec![Unstarted], "claude"),
+            (vec![Nested(done.clone())], "codex"),
+            (vec![Nested(done.clone()), Nested(done.clone())], "claude"),
+            (vec![Ready, Unstarted], "claude"),
+        ] {
+            let (sessions, settled) = settle_launch(&reports, Some(family));
+            let sessions = sessions.unwrap();
+            assert_eq!(sessions.len(), reports.len(), "{reports:?}");
+            assert_eq!(
+                sessions.last().unwrap(),
+                &Session::without_receipt(reports.len() as u8 - 1, UNSTARTED)
+            );
+            assert_eq!(settled, Err("agent_unstarted".into()), "{reports:?}");
+        }
     }
 }
 
